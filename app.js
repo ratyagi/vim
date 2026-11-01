@@ -7,6 +7,28 @@
   var KEY = 'wt.v1', SKEY = 'wt.sync';
   var DEFAULTS = { unit: 'kg', hunit: 'cm', heightCm: null, goalKg: null, goalDate: '', mode: 'lose', bandKg: 1, bmiScale: 'who' };
   var DEMO = location.hash === '#demo';
+  var THEMES = {
+    dusk: { name: 'Violet Dusk', meta: '#120b16', swatch: ['#502d55', '#935073', '#f6dbc0', '#f8f4e9'],
+      chart: { a: '#c4799f', b: '#f6dbc0', c: '#b58ac0', o: '#ff9f7a', grid: '#2e2038', mute: '#a898b0', line2: '#4a3858', bg: '#21162a' },
+      rings: [['#935073', '#c4799f'], ['#f6dbc0', '#ffe9d6'], ['#7b4a85', '#b58ac0']] },
+    sunset: { name: 'Sunset', meta: '#17110c', swatch: ['#ea6113', '#f88f22', '#fbb931', '#ffe3b3'],
+      chart: { a: '#f88f22', b: '#fbb931', c: '#ffe3b3', o: '#ff4d2e', grid: '#34271c', mute: '#b8a58f', line2: '#4f3d2c', bg: '#261c14' },
+      rings: [['#ea6113', '#f88f22'], ['#fbb931', '#ffd36b'], ['#ffe3b3', '#fff1d6']] },
+    fitness: { name: 'Fitness', meta: '#000000', swatch: ['#ff2d55', '#a3f408', '#2de3f0', '#ffffff'],
+      chart: { a: '#ff2d55', b: '#a3f408', c: '#2de3f0', o: '#ff9f0a', grid: '#2c2c2e', mute: '#8e8e93', line2: '#48484a', bg: '#1c1c1e' },
+      rings: [['#ff2d55', '#ff6b8b'], ['#a3f408', '#5fe33b'], ['#2de3f0', '#1fa9ff']] }
+  };
+  var theme = 'dusk';
+  try { var tt = localStorage.getItem('wt.theme'); if (THEMES[tt]) theme = tt; } catch (e) { /* ignore */ }
+  function applyTheme(t) {
+    theme = THEMES[t] ? t : 'dusk';
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('wt.theme', theme); } catch (e) { /* ignore */ }
+    var m = document.querySelector('meta[name=theme-color]'); if (m) m.setAttribute('content', THEMES[theme].meta);
+    window.Charts.setTheme(THEMES[theme].chart);
+  }
+  function ringCol(i, pct) { var r = THEMES[theme].rings[i]; return { pct: pct, c1: r[0], c2: r[1] }; }
+  applyTheme(theme);
 
   function $(s, el) { return (el || document).querySelector(s); }
   function $$(s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); }
@@ -153,7 +175,7 @@
           saveEntry(d.value, w.value); closeSheet();
         }
         btn.addEventListener('click', go);
-        refresh();
+        refresh(); markDates();
       });
   }
   function validateEntry(date, raw) {
@@ -501,7 +523,7 @@
       var hmax = clamp((A.eta.late ? S.dayNum(A.eta.late) - A.last.n : 120) + 14, 30, sim.H), pts = [], i;
       for (i = 0; i <= hmax; i++) pts.push({ n: A.last.n + i, p: sim.cumTrend[i] });
       var marks = [];
-      if (state.settings.goalDate && S.dayNum(state.settings.goalDate) > A.todayN) marks.push({ n: S.dayNum(state.settings.goalDate), label: 'Target', color: '#ff9f0a' });
+      if (state.settings.goalDate && S.dayNum(state.settings.goalDate) > A.todayN) marks.push({ n: S.dayNum(state.settings.goalDate), label: 'Target', color: C.T.o });
       if (A.eta.median) marks.push({ n: S.dayNum(A.eta.median), label: 'Median', color: '#fff' });
       return C.probChart({ W: W, H: H, n0: A.last.n, n1: A.last.n + hmax, pts: pts, marks: marks });
     };
@@ -524,7 +546,7 @@
       '<div class="seg"><button data-action="fc" class="' + (ui.fc ? 'on' : '') + '">Forecast</button></div></div>';
   }
   function legend(A) {
-    return '<div class="legend"><span><i style="background:#ff2d55"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
+    return '<div class="legend"><span><i style="background:var(--red)"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
       '<span><i class="box"></i>Usual scatter</span>' +
       (A.estCount ? '<span><i class="dot" style="border:1px solid #8e8e93"></i>Filled in</span>' : '') +
       (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dash"></i>Same pace</span>') : '') + '</div>';
@@ -536,7 +558,7 @@
     return '<div class="head"><div><div class="date">' + d + '</div><h1>' + title + '</h1></div>' + chipHtml() + '</div>' + (DEMO ? '<div class="warn" style="margin-bottom:14px">Demo data. Nothing here is saved.</div>' : '');
   }
   function emptyState(title) {
-    return header(title) + '<div class="card empty">' + C.rings([{ pct: 0, c1: '#ff2d55', c2: '#ff6b8b' }, { pct: 0, c1: '#a3f408', c2: '#5fe33b' }, { pct: 0, c1: '#2de3f0', c2: '#1fa9ff' }]).replace('<svg ', '<svg class="ring-art" ') +
+    return header(title) + '<div class="card empty">' + C.rings([ringCol(0, 0), ringCol(1, 0), ringCol(2, 0)]).replace('<svg ', '<svg class="ring-art" ') +
       '<h2>Start your first ring</h2><p class="sub">Import your Excel sheet once, or log today\'s weight.</p>' +
       '<div class="row-btns"><button class="btn primary" data-action="pick-import">Import Excel or CSV</button><button class="btn" data-action="log">Log a weight</button></div></div>';
   }
@@ -550,17 +572,19 @@
     if (!A.series || !A.series.length) return emptyState('Today');
     var u = unit(), st = A.streak, h = header('Today'), goal = A.goalKg;
 
-    var r1, r2, r3;
+    var r1, r2, r3, c7 = A.change7;
     if (A.maintain) {
-      r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + A.maint.of + ' days within ±' + fw(A.maint.band) + ' ' + u : '' };
-      r3 = { pct: Math.min(1, st.current / 14), k: 'Logging streak', v: st.current, unitLabel: 'days', n: 'goal: 14' };
+      r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + A.maint.of + ' days within \u00b1' + fw(A.maint.band) + ' ' + u : '' };
+      r2 = { pct: c7 === null ? 0 : Math.max(0, 1 - Math.abs(c7) / A.maint.band), k: 'Last 7 days', v: c7 === null ? '--' : sgn(dsp(c7)), unitLabel: u, n: 'closer to 0 is steadier' };
     } else {
       var gt = goal ? fw(A.lostKg) + ' of ' + fw(A.startKg - goal) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
       r1 = { pct: A.goalProgress || 0, k: goal ? 'Goal progress' : 'First 5%', v: Math.round((A.goalProgress || 0) * 100), unitLabel: '%', n: gt };
-      r3 = { pct: A.pacePct || 0, k: 'Pace', v: A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--', unitLabel: u + '/wk', n: A.rate ? 'target ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) : 'needs about 10 readings' };
+      var loss7 = c7 === null ? null : -c7;
+      r2 = { pct: loss7 === null ? 0 : clamp(loss7 / A.paceTarget.kgPerWeek, 0, 1), k: 'Last 7 days', v: loss7 === null ? '--' : fw(Math.abs(loss7)), unitLabel: loss7 !== null && loss7 < 0 ? u + ' gained' : u + ' lost',
+        n: 'weekly target ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) + ' ' + u };
     }
-    r2 = { pct: st.week / 7, k: 'Logged this week', v: st.week, unitLabel: '/7 days', n: st.today ? 'Today is in' : 'Today is open' };
-    var rings = C.rings([{ pct: r1.pct, c1: '#ff2d55', c2: '#ff6b8b' }, { pct: r2.pct, c1: '#a3f408', c2: '#5fe33b' }, { pct: r3.pct, c1: '#2de3f0', c2: '#1fa9ff' }]);
+    r3 = { pct: st.today ? 1 : 0, k: 'Today', v: st.current, unitLabel: st.current === 1 ? 'day streak' : 'day streak', n: st.today ? 'Logged. Ring closed' : 'Log to close the ring' };
+    var rings = C.rings([ringCol(0, r1.pct), ringCol(1, r2.pct), ringCol(2, r3.pct)]);
     var rs = function (o, cls) { return '<div class="rstat"><div class="k ' + cls + '">' + o.k + '</div><div class="v ' + cls + ' num">' + o.v + '<small>' + o.unitLabel + '</small></div><div class="n num">' + o.n + '</div></div>'; };
 
     var warns = '';
@@ -586,7 +610,8 @@
     h += '<div class="card">' + rangeControls() + slot('sum', weightChart('sum', 240)) + legend(A) + '</div>';
 
     var t = '';
-    t += '<div class="card tile"><div class="k">Streak</div><div class="v green num">' + st.current + '<small>days</small></div><div class="n">longest ' + st.longest + '</div></div>';
+    if (A.maintain) t += '<div class="card tile"><div class="k">Drift</div><div class="v green num">' + (A.maint.drift !== null ? sgn(dsp(A.maint.drift), 2) : '--') + '<small>' + u + '/wk</small></div><div class="n">best streak ' + st.longest + ' days</div></div>';
+    else t += '<div class="card tile"><div class="k">Pace</div><div class="v green num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n">' + (A.rate ? 'best streak ' + st.longest + ' days' : 'needs about 10 readings') + '</div></div>';
     if (A.maintain) {
       t += '<div class="card tile"><div class="k">Goal range</div><div class="v num">' + fw(goal) + '<small>±' + fw(A.maint.band) + '</small></div><div class="n">' + (A.maint.drift !== null ? 'drifting ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + '/wk' : '') + '</div></div>';
     } else {
@@ -675,11 +700,14 @@
       var names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], order = [1, 2, 3, 4, 5, 6, 0];
       if (A.weekdaySig.length) { var t = A.weekdaySig[0]; wd += '<div class="lead">' + names[t.dow] + ' readings run ' + dsp(Math.abs(t.mean)).toFixed(1) + ' ' + u + (t.mean > 0 ? ' higher' : ' lower') + ' than your trend.</div>'; }
       else wd += '<div class="lead">No clear weekday pattern.</div>';
+      if (!A.weekdaySig.length) wd += '<div class="sub">Day to day differences are smaller than normal scale noise, so no weekday pattern is shown.</div>';
+      else {
       var mx = Math.max(0.3, Math.max.apply(null, A.weekday.map(function (x) { return Math.abs(x.mean); })));
       wd += '<div class="wd">' + order.map(function (i) {
         var x = A.weekday[i], pct = Math.min(100, Math.abs(x.mean) / mx * 100), col = !A.weekdaySig.length ? '#48484a' : x.mean >= 0 ? 'var(--orange)' : 'var(--cyan)';
         return '<div class="col"><div class="up">' + (x.mean > 0 ? '<div class="bar" style="height:' + pct + '%;background:' + col + '"></div>' : '') + '</div><div class="dn">' + (x.mean < 0 ? '<div class="bar" style="height:' + pct + '%;background:' + col + '"></div>' : '') + '</div><div class="lab">' + names[i] + '</div></div>';
       }).join('') + '</div><div class="sub" style="margin-top:6px">Reading minus trend, by weekday. Under about ' + dsp(0.2).toFixed(1) + ' ' + u + ' is mostly noise.</div>';
+      }
     }
     wd += '</div>';
     cards += wd;
@@ -701,7 +729,7 @@
     if (outs.length) q += '<div class="sub" style="margin-top:8px">Unusual readings, well away from the trend (usually water, salt or timing): ' + outs.map(function (p) { return fdate(p.d) + ' (' + sgn(dsp(p.raw - p.trend)) + ')'; }).join(', ') + '.</div>';
     q += '</div>';
     cards += q;
-    return h + '<div class="grid">' + cards + '</div>';
+    return h + '<div class="grid top">' + cards + '</div>';
   }
 
   function viewSettings() {
@@ -733,12 +761,17 @@
       '<div class="note">Import looks for a Date column and a Weight column and merges by date, so you can re-import an updated sheet any time.</div>';
     h += '</div><div class="c-6">';
 
-    h += '<div class="h2" style="margin-top:6px">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your data in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing.</div>' +
+    h += '<div class="h2" style="margin-top:6px">Appearance</div><div class="themes">' + ['dusk', 'sunset', 'fitness'].map(function (k) {
+      var T = THEMES[k];
+      return '<button class="theme-opt' + (k === theme ? ' on' : '') + '" data-theme-pick="' + k + '" aria-pressed="' + (k === theme) + '"><span class="sw">' + T.swatch.map(function (c) { return '<i style="background:' + c + '"></i>'; }).join('') + '</span>' + T.name + '</button>';
+    }).join('') + '</div>';
+
+    h += '<div class="h2">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your data in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing.</div>' +
       '<div class="list">' +
-      '<div class="li"><label for="y-o">GitHub username</label><input id="y-o" class="w3" autocapitalize="off" autocomplete="off" placeholder="your-name" value="' + esc(sync.owner) + '"></div>' +
-      '<div class="li"><label for="y-r">Private repo</label><input id="y-r" class="w3" autocapitalize="off" autocomplete="off" placeholder="vim-data" value="' + esc(sync.repo) + '"></div>' +
+      '<div class="li"><label for="y-o">GitHub username</label><input id="y-o" name="vim-gh-user" class="w3" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="your-name" value="' + esc(sync.owner) + '"></div>' +
+      '<div class="li"><label for="y-r">Private repo</label><input id="y-r" name="vim-gh-repo" class="w3" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="vim-data" value="' + esc(sync.repo) + '"></div>' +
       '<div class="li"><label for="y-p">File</label><input id="y-p" class="w3" autocapitalize="off" autocomplete="off" value="' + esc(sync.path) + '"></div>' +
-      '<div class="li"><label for="y-t">Access token</label><input id="y-t" class="w3" type="password" autocomplete="off" placeholder="github_pat_..." value="' + esc(sync.token) + '"></div></div>' +
+      '<div class="li"><label for="y-t">Access token</label><input id="y-t" name="vim-gh-token" class="w3" type="password" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" data-form-type="other" spellcheck="false" placeholder="github_pat_..." value="' + esc(sync.token) + '"></div></div>' +
       '<div class="row-btns" style="margin-top:0"><button class="btn primary small" data-action="sync-on">' + (sync.on ? 'Save and sync now' : 'Connect and sync') + '</button>' + (sync.on ? '<button class="btn small" data-action="sync-off">Disconnect</button>' : '') + '</div>' +
       '<div id="sync-status" class="status ' + ui.cls + '">' + esc(ui.msg || (sync.on && sync.last ? 'Last synced ' + new Date(sync.last).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : (sync.on ? 'Connected' : 'Not connected'))) + '</div>' +
       '<div class="note">The token stays in this browser only. Use a fine-grained token limited to that one repo with Contents: read and write.</div>';
@@ -790,9 +823,10 @@
     builders = {};
     v.innerHTML = VIEWS[ui.tab](A);
     $$('.tab[data-tab]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === ui.tab); });
-    drawCharts(); C.animateRings(v); updateChip(); updateWhatIf();
+    markDates(); drawCharts(); C.animateRings(v); updateChip(); updateWhatIf();
     window.scrollTo(0, y); if (c) c.scrollTop = cy;
   }
+  function markDates() { $$('input[type=date]').forEach(function (el) { el.classList.toggle('is-empty', !el.value); }); }
   function updateWhatIf() {
     var el = $('#wi'); if (!el) return;
     var out = $('#wi-out'), rate = fromDsp(parseFloat(el.value)), level = +el.dataset.level, goal = +el.dataset.goal, last = +el.dataset.last;
@@ -804,6 +838,7 @@
   function goTab(t) { ui.tab = t; ui.showAll = false; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
   document.addEventListener('click', function (e) {
     var tb = e.target.closest('[data-toast]'); if (tb) { var fn = toastFn; $('#toast').classList.remove('show'); toastFn = null; if (fn) fn(); return; }
+    var tp = e.target.closest('[data-theme-pick]'); if (tp) { applyTheme(tp.dataset.themePick); render(); return; }
     var t = e.target.closest('[data-action],[data-tab],[data-range]'); if (!t) return;
     if (t.dataset.tab) { goTab(t.dataset.tab); return; }
     if (t.dataset.range) { ui.range = t.dataset.range; render(); return; }
@@ -844,7 +879,8 @@
       $('#f-g-l').textContent = (m ? 'Target weight' : 'Goal weight') + ' (' + unit() + ')';
     }
   });
-  document.addEventListener('input', function (e) { if (e.target.id === 'wi') updateWhatIf(); });
+  document.addEventListener('input', function (e) { if (e.target.id === 'wi') updateWhatIf(); if (e.target.type === 'date') markDates(); });
+  document.addEventListener('change', function (e) { if (e.target.type === 'date') markDates(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { closeSheet(); return; }
     var tag = (e.target.tagName || '').toLowerCase();

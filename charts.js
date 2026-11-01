@@ -5,6 +5,8 @@
   'use strict';
   var DAY = 86400000;
   var registry = {};
+  var TH = { a: '#ff2d55', b: '#a3f408', c: '#2de3f0', o: '#ff9f0a', grid: '#2c2c2e', mute: '#8e8e93', line2: '#48484a', bg: '#000' };
+  function setTheme(t) { for (var k in t) TH[k] = t[k]; }
 
   function dateShort(n) { return new Date(n * DAY).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }); }
   function niceTicks(lo, hi, target) {
@@ -44,23 +46,23 @@
     var x = function (n) { return padL + (n - o.n0) / Math.max(1, o.n1 - o.n0) * pw; };
     var y = function (v) { return padT + (1 - (v - T.min) / (T.max - T.min)) * ph; };
     var s = ['<svg class="chart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + (o.label || 'Weight chart') + '" data-chart="' + o.id + '">'];
-    s.push('<defs><linearGradient id="ar-' + o.id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff2d55" stop-opacity=".28"/><stop offset="1" stop-color="#ff2d55" stop-opacity="0"/></linearGradient></defs>');
+    s.push('<defs><linearGradient id="ar-' + o.id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+TH.a+'" stop-opacity=".28"/><stop offset="1" stop-color="'+TH.a+'" stop-opacity="0"/></linearGradient></defs>');
     T.ticks.forEach(function (t) {
-      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="#2c2c2e"/>');
+      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="'+TH.grid+'"/>');
       s.push('<text x="' + (W - padR + 6) + '" y="' + f1(y(t) + 3.5) + '">' + fmtTick(t, T.step) + '</text>');
     });
     xticks(s, o, x, W, H, padB);
     (o.refs || []).forEach(function (r) {
       if (r.v > T.min + (T.max - T.min) * 0.03 && r.v < T.max - (T.max - T.min) * 0.03) {
-        s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(r.v)) + '" y2="' + f1(y(r.v)) + '" stroke="#8e8e93" stroke-opacity=".5" stroke-dasharray="1 4" stroke-linecap="round"/>');
-        s.push('<text x="' + (W - padR - 4) + '" y="' + f1(y(r.v) - 4) + '" text-anchor="end" style="fill:#8e8e93">' + r.label + '</text>');
+        s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(r.v)) + '" y2="' + f1(y(r.v)) + '" stroke="'+TH.mute+'" stroke-opacity=".5" stroke-dasharray="1 4" stroke-linecap="round"/>');
+        s.push('<text x="' + (W - padR - 4) + '" y="' + f1(y(r.v) - 4) + '" text-anchor="end" style="fill:'+TH.mute+'">' + r.label + '</text>');
       }
     });
     if (o.band && o.band.hi.length > 1) {
       s.push('<polygon points="' + pts(o.band.hi, x, y).concat(pts(o.band.lo.slice().reverse(), x, y)).join(' ') + '" fill="#fff" fill-opacity=".07"/>');
     }
     if (o.fc) {
-      s.push('<polygon points="' + pts(o.fc.hi, x, y).concat(pts(o.fc.lo.slice().reverse(), x, y)).join(' ') + '" fill="#a3f408" fill-opacity=".12"/>');
+      s.push('<polygon points="' + pts(o.fc.hi, x, y).concat(pts(o.fc.lo.slice().reverse(), x, y)).join(' ') + '" fill="'+TH.b+'" fill-opacity=".12"/>');
     }
     if (o.goal != null && y(o.goal) >= padT && y(o.goal) <= padT + ph) {
       s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(o.goal)) + '" y2="' + f1(y(o.goal)) + '" stroke="#fff" stroke-opacity=".5" stroke-dasharray="4 4"/>');
@@ -69,21 +71,21 @@
     if (o.trend.length > 1) {
       var tp = pts(o.trend, x, y), a = o.trend[0], z = o.trend[o.trend.length - 1];
       s.push('<polygon points="' + tp.join(' ') + ' ' + f1(x(z.n)) + ',' + (padT + ph) + ' ' + f1(x(a.n)) + ',' + (padT + ph) + '" fill="url(#ar-' + o.id + ')"/>');
-      s.push('<polyline points="' + tp.join(' ') + '" fill="none" stroke="#ff2d55" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>');
+      s.push('<polyline points="' + tp.join(' ') + '" fill="none" stroke="'+TH.a+'" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>');
     }
     if (o.fc) {
-      if (o.fc.straight) s.push('<polyline points="' + pts(o.fc.straight, x, y).join(' ') + '" fill="none" stroke="#2de3f0" stroke-width="2" stroke-dasharray="2 5" stroke-linecap="round"/>');
-      s.push('<polyline points="' + pts(o.fc.mid, x, y).join(' ') + '" fill="none" stroke="#a3f408" stroke-width="2.2" stroke-dasharray="6 5" stroke-linecap="round"/>');
+      if (o.fc.straight) s.push('<polyline points="' + pts(o.fc.straight, x, y).join(' ') + '" fill="none" stroke="'+TH.c+'" stroke-width="2" stroke-dasharray="2 5" stroke-linecap="round"/>');
+      s.push('<polyline points="' + pts(o.fc.mid, x, y).join(' ') + '" fill="none" stroke="'+TH.b+'" stroke-width="2.2" stroke-dasharray="6 5" stroke-linecap="round"/>');
     }
     o.raw.forEach(function (p) {
       var cx = f1(x(p.n)), cy = f1(y(p.v));
-      if (p.est) s.push('<circle cx="' + cx + '" cy="' + cy + '" r="2.4" fill="none" stroke="#8e8e93"/>');
-      else if (p.out) s.push('<circle cx="' + cx + '" cy="' + cy + '" r="3.6" fill="#ff9f0a" stroke="#000" stroke-width="1"/>');
+      if (p.est) s.push('<circle cx="' + cx + '" cy="' + cy + '" r="2.4" fill="none" stroke="'+TH.mute+'"/>');
+      else if (p.out) s.push('<circle cx="' + cx + '" cy="' + cy + '" r="3.6" fill="'+TH.o+'" stroke="'+TH.bg+'" stroke-width="1"/>');
       else s.push('<circle cx="' + cx + '" cy="' + cy + '" r="2.7" fill="#fff" fill-opacity=".65"/>');
     });
     if (o.trend.length) {
       var lp = o.trend[o.trend.length - 1];
-      s.push('<circle cx="' + f1(x(lp.n)) + '" cy="' + f1(y(lp.v)) + '" r="5" fill="#ff2d55" stroke="#fff" stroke-width="2"/>');
+      s.push('<circle cx="' + f1(x(lp.n)) + '" cy="' + f1(y(lp.v)) + '" r="5" fill="'+TH.a+'" stroke="#fff" stroke-width="2"/>');
     }
     s.push('<line id="hl-' + o.id + '" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#fff" stroke-opacity=".5" visibility="hidden"/>');
     s.push('<rect x="' + padL + '" y="' + padT + '" width="' + pw + '" height="' + ph + '" fill="transparent" style="cursor:crosshair"/></svg>');
@@ -100,19 +102,19 @@
     var y = function (v) { return padT + (1 - (v - T.min) / (T.max - T.min)) * ph; };
     var s = ['<svg class="chart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + (o.label || 'Pace over time') + '">'];
     T.ticks.forEach(function (t) {
-      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="' + (t === 0 ? '#48484a' : '#2c2c2e') + '"/>');
+      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="' + (t === 0 ? TH.line2 : TH.grid) + '"/>');
       s.push('<text x="' + (W - padR + 6) + '" y="' + f1(y(t) + 3.5) + '">' + fmtTick(t, T.step) + '</text>');
     });
     xticks(s, o, x, W, H, padB);
     var up = o.pts.map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.hi)); }), dn = o.pts.slice().reverse().map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.lo)); });
-    s.push('<polygon points="' + up.concat(dn).join(' ') + '" fill="#2de3f0" fill-opacity=".16"/>');
+    s.push('<polygon points="' + up.concat(dn).join(' ') + '" fill="'+TH.c+'" fill-opacity=".16"/>');
     if (o.target != null) {
       s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(o.target)) + '" y2="' + f1(y(o.target)) + '" stroke="#fff" stroke-opacity=".5" stroke-dasharray="4 4"/>');
       s.push('<text x="' + (padL + 2) + '" y="' + f1(y(o.target) - 5) + '" style="fill:#fff;fill-opacity:.75">Target pace</text>');
     }
-    s.push('<polyline points="' + o.pts.map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.v)); }).join(' ') + '" fill="none" stroke="#2de3f0" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>');
+    s.push('<polyline points="' + o.pts.map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.v)); }).join(' ') + '" fill="none" stroke="'+TH.c+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>');
     var lp = o.pts[o.pts.length - 1];
-    s.push('<circle cx="' + f1(x(lp.n)) + '" cy="' + f1(y(lp.v)) + '" r="4.5" fill="#2de3f0" stroke="#000" stroke-width="2"/></svg>');
+    s.push('<circle cx="' + f1(x(lp.n)) + '" cy="' + f1(y(lp.v)) + '" r="4.5" fill="'+TH.c+'" stroke="'+TH.bg+'" stroke-width="2"/></svg>');
     return s.join('');
   }
 
@@ -122,15 +124,15 @@
     var x = function (n) { return padL + (n - o.n0) / Math.max(1, o.n1 - o.n0) * pw; };
     var y = function (p) { return padT + (1 - p) * ph; };
     var s = ['<svg class="chart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + (o.label || 'Chance of reaching goal by date') + '">'];
-    s.push('<defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a3f408" stop-opacity=".3"/><stop offset="1" stop-color="#a3f408" stop-opacity="0"/></linearGradient></defs>');
+    s.push('<defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+TH.b+'" stop-opacity=".3"/><stop offset="1" stop-color="'+TH.b+'" stop-opacity="0"/></linearGradient></defs>');
     [0, 0.25, 0.5, 0.75, 1].forEach(function (t) {
-      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="#2c2c2e"/>');
+      s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(t)) + '" y2="' + f1(y(t)) + '" stroke="'+TH.grid+'"/>');
       s.push('<text x="' + (W - padR + 6) + '" y="' + f1(y(t) + 3.5) + '">' + Math.round(t * 100) + '%</text>');
     });
     xticks(s, o, x, W, H, padB);
     var line = o.pts.map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.p)); });
     s.push('<polygon points="' + line.join(' ') + ' ' + f1(x(o.pts[o.pts.length - 1].n)) + ',' + f1(y(0)) + ' ' + f1(x(o.pts[0].n)) + ',' + f1(y(0)) + '" fill="url(#pg)"/>');
-    s.push('<polyline points="' + line.join(' ') + '" fill="none" stroke="#a3f408" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>');
+    s.push('<polyline points="' + line.join(' ') + '" fill="none" stroke="'+TH.b+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>');
     (o.marks || []).forEach(function (m) {
       if (m.n < o.n0 || m.n > o.n1) return;
       s.push('<line x1="' + f1(x(m.n)) + '" x2="' + f1(x(m.n)) + '" y1="' + (padT - 4) + '" y2="' + (padT + ph) + '" stroke="' + m.color + '" stroke-dasharray="3 4"/>');
@@ -175,5 +177,5 @@
     });
   }
 
-  window.Charts = { lineChart: lineChart, paceChart: paceChart, probChart: probChart, rings: rings, animateRings: animateRings, bind: bind, dateShort: dateShort };
+  window.Charts = { T: TH, setTheme: setTheme, lineChart: lineChart, paceChart: paceChart, probChart: probChart, rings: rings, animateRings: animateRings, bind: bind, dateShort: dateShort };
 })();
