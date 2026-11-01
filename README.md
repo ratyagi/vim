@@ -57,7 +57,8 @@ Pages redeploys in about a minute. Hard refresh once (or close and reopen the in
 ### 4. Connect the app
 - Open the app > **Settings** tab.
 - Import your Excel sheet (first sheet, a Date column and a Weight column).
-- Fill in height, age, goal weight, target date.
+- Fill in height, goal weight, target date. Settings save as you type; there is no Save button.
+- Imports show the date order and unit they detected. Check both before you confirm. Sync only connects to a private repo.
 - Private sync: username, `vim-data`, file `data.json`, paste token > **Connect and sync**.
 - Repeat the connect step on your other devices. They pull the same data.
 

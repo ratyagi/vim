@@ -85,17 +85,18 @@
       A.trendSd = m.lvlSd[m.N - 1];
     }
     A.hasModel = !!m;
+    A.firstRawKg = A.startKg; if (m) A.startKg = series[0].trend;
     A.currentKg = last.trend;
     A.change7 = N >= 8 ? last.trend - series[N - 8].trend : null;
     A.lostKg = A.startKg - A.currentKg;
     A.lostPct = A.lostKg / A.startKg * 100;
 
     // ---- pace
-    if (m && entries.length >= 10) {
+    if (m) {
       var sdB = Math.sqrt(m.last.P22);
       A.rate = { lossPerWeek: -7 * m.last.b, se80: Z80 * 7 * sdB };
     }
-    A.fastPace = !!(A.rate && A.rate.lossPerWeek > 0.01 * A.currentKg);
+    A.fastPace = !!(A.rate && entries.length >= 14 && A.spanDays >= 14 && A.rate.lossPerWeek > 0.01 * A.currentKg && (A.rate.lossPerWeek - A.rate.se80) > 0.008 * A.currentKg);
 
     // ---- goal and pace target
     var goal = cfg.goalKg || null, maintain = cfg.mode === 'maintain' && !!goal;
@@ -141,7 +142,7 @@
       var b = bmi(A.currentKg, cfg.heightCm), band = bmiBand(b, cfg.bmiScale), sc = SCALES[cfg.bmiScale] || SCALES.who, below = null, k;
       A.bmi = { value: b, label: band.label, idx: band.idx };
       for (k = sc.cuts.length - 1; k >= 0; k--) if (b >= sc.cuts[k]) { below = sc.cuts[k]; break; }
-      if (below !== null) A.bmi.next = { cut: below, kgAt: below * Math.pow(cfg.heightCm / 100, 2), kgToGo: A.currentKg - below * Math.pow(cfg.heightCm / 100, 2), label: sc.labels[Math.max(0, band.idx - 1)] };
+      if (below !== null && band.idx >= 2) A.bmi.next = { cut: below, kgAt: below * Math.pow(cfg.heightCm / 100, 2), kgToGo: A.currentKg - below * Math.pow(cfg.heightCm / 100, 2), label: sc.labels[Math.max(0, band.idx - 1)] };
       A.bmiRefs = sc.cuts.map(function (c) { return { cut: c, kg: c * Math.pow(cfg.heightCm / 100, 2) }; });
     }
 

@@ -43,6 +43,7 @@
   function loadState() {
     try {
       var j = JSON.parse(localStorage.getItem(KEY));
+      if (j && j.entries) { Object.keys(j.entries).forEach(function (k) { if (j.entries[k] && j.entries[k].del) j.entries[k].kg = 0; }); }
       if (j && j.entries) return { entries: j.entries, settings: Object.assign({}, DEFAULTS, j.settings), st: j.st || 0 };
     } catch (e) { /* fall through */ }
     return { entries: {}, settings: Object.assign({}, DEFAULTS), st: 0 };
@@ -128,6 +129,10 @@
   }
 
   /* ---------------------------------------------------------------- logging */
+  function prevKgBefore(date) {
+    var ks = Object.keys(state.entries).filter(function (k) { return k < date && !state.entries[k].del; }).sort();
+    return ks.length ? state.entries[ks[ks.length - 1]].kg : null;
+  }
   function entryKg(date) { var e = state.entries[date]; return e && !e.del ? e.kg : null; }
   function openLog(date) {
     var today = S.localToday(); date = date || today;
@@ -153,10 +158,8 @@
           $('#ldel', el).classList.toggle('hide', ex === null);
           btn.textContent = ex !== null ? 'Update' : 'Save'; title.textContent = ex !== null ? 'Update weight' : 'Log weight';
           var txt = unit();
-          if (isFinite(v) && hasData) {
-            var diff = v - dsp(A.latestKg);
-            txt += ' · ' + sgn(diff) + ' vs last reading';
-          }
+          var pk = prevKgBefore(dv);
+          if (isFinite(v) && pk !== null) txt += ' · ' + sgn(v - dsp(pk)) + ' vs previous reading';
           if (ex !== null) txt += ' · replaces ' + fw(ex, 1);
           hint.textContent = txt;
           $('#d-today', el).classList.toggle('on', dv === today);
@@ -166,11 +169,24 @@
           var v = parseNum(w.value); if (!isFinite(v)) v = start !== null ? dsp(start) : 70;
           w.value = (Math.round((v + delta) * 10) / 10).toFixed(1); refresh();
         }
-        $('#lm', el).addEventListener('click', function () { bump(-0.1); });
-        $('#lp', el).addEventListener('click', function () { bump(0.1); });
-        $('#d-today', el).addEventListener('click', function () { d.value = today; refresh(); });
-        $('#d-yest', el).addEventListener('click', function () { d.value = S.dayStr(S.dayNum(today) - 1); refresh(); });
-        w.addEventListener('input', refresh); d.addEventListener('change', refresh);
+        function hold(btnEl, delta) {
+          var t1, t2;
+          function stop() { clearTimeout(t1); clearInterval(t2); }
+          btnEl.addEventListener('pointerdown', function (e) {
+            if (e.button) return; bump(delta);
+            t1 = setTimeout(function () { var n = 0; t2 = setInterval(function () { n++; bump(delta * (n > 15 ? 5 : 1)); }, 90); }, 450);
+          });
+          ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { btnEl.addEventListener(ev, stop); });
+          btnEl.addEventListener('click', function (e) { if (e.detail === 0) bump(delta); }); // keyboard
+        }
+        hold($('#lm', el), -0.1); hold($('#lp', el), 0.1);
+        var typed = false; w.addEventListener('input', function () { typed = true; });
+        function loadDay() { var ex2 = entryKg(d.value); if (ex2 !== null && !typed) w.value = fw(ex2, 1); refresh(); }
+        function setDay(v) { d.value = v; loadDay(); }
+        $('#d-today', el).addEventListener('click', function () { setDay(today); });
+        $('#d-yest', el).addEventListener('click', function () { setDay(S.dayStr(S.dayNum(today) - 1)); });
+        w.addEventListener('input', refresh);
+        d.addEventListener('change', loadDay);
         w.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') go();
           else if (e.key === 'ArrowUp') { e.preventDefault(); bump(0.1); }
@@ -203,9 +219,9 @@
     var msg = 'Saved.';
     if (A.streak.current > 1 && date >= S.dayStr(A.todayN - 1)) msg = 'Saved. ' + plural(A.streak.current, 'day') + ' streak.';
     if (A.reached && !(before.reached) && !A.maintain && A.goalKg) msg = 'Saved. Your trend is at your goal.';
-    else if (prevTrend !== null && A.hasModel && A.currentKg < Math.min.apply(null, A.series.slice(0, -1).map(function (p) { return p.trend; })) - 1e-6) msg = 'Saved. New lowest trend weight.';
+    else if (prevTrend !== null && A.hasModel && !A.maintain && Math.floor(dsp(A.currentKg)) < Math.floor(dsp(prevTrend)) && date >= S.dayStr(A.todayN - 1)) msg = 'Saved. Trend passed ' + Math.floor(dsp(prevTrend)) + ' ' + unit() + '.';
     toast(msg, 'Undo', function () {
-      state.entries[date] = prev ? { kg: prev.kg, t: Date.now(), del: !!prev.del } : { kg: kg, t: Date.now(), del: true };
+      state.entries[date] = prev ? { kg: prev.kg, t: Date.now(), del: !!prev.del } : { kg: 0, t: Date.now(), del: true };
       persist(); analyze(); render();
     });
     if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* ignore */ } }
@@ -213,7 +229,7 @@
   function deleteEntry(date) {
     var cur = state.entries[date]; if (!cur) return;
     var old = { kg: cur.kg, t: cur.t };
-    state.entries[date] = { kg: cur.kg, t: Date.now(), del: true };
+    state.entries[date] = { kg: 0, t: Date.now(), del: true };
     persist(); analyze(); render();
     toast('Deleted ' + fdate(date), 'Undo', function () { state.entries[date] = { kg: old.kg, t: Date.now() }; persist(); analyze(); render(); });
   }
@@ -239,7 +255,8 @@
     return rows.filter(function (r) { return r.some(function (x) { return String(x).trim() !== ''; }); });
   }
   function p2(n) { return String(n).padStart(2, '0'); }
-  function parseDateCell(v) {
+  var SLASH = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/;
+  function parseDateCell(v, order) {
     if (v === null || v === undefined || v === '') return null;
     var ds = null;
     if (typeof v === 'number') {
@@ -250,9 +267,10 @@
     } else {
       var s = String(v).trim(), m;
       if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) ds = m[1] + '-' + p2(m[2]) + '-' + p2(m[3]);
-      else if ((m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/))) {
+      else if ((m = s.match(SLASH))) {
         var a = +m[1], b = +m[2], y = +m[3]; if (y < 100) y += 2000;
-        var mo = a, da = b; if (a > 12 && b <= 12) { mo = b; da = a; }
+        var mo = order === 'dmy' ? b : a, da = order === 'dmy' ? a : b;
+        if (mo < 1 || mo > 12) return null; // does not fit the chosen order: skipped, never silently swapped
         ds = y + '-' + p2(mo) + '-' + p2(da);
       } else { var t = Date.parse(s); if (!isNaN(t)) { var dd = new Date(t); ds = dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate()); } }
     }
@@ -266,7 +284,7 @@
     if (v === null || v === undefined) return null;
     var m = String(v).match(/-?\d+(?:[.,]\d+)?/); return m ? parseFloat(m[0].replace(',', '.')) : null;
   }
-  function extractRows(rows) {
+  function extractRows(rows, forceOrder) {
     var hdr = -1, dc = 0, wc = 1, i, j;
     for (i = 0; i < Math.min(10, rows.length); i++) {
       var d = -1, w = -1;
@@ -277,9 +295,18 @@
       }
       if (d >= 0 && w >= 0) { hdr = i; dc = d; wc = w; break; }
     }
+    // one date order for the whole file: decided by rows that can only be one way (like 13/04)
+    var aBig = 0, bBig = 0, slash = 0;
+    for (i = hdr + 1; i < rows.length; i++) {
+      var cell = rows[i][dc]; if (typeof cell !== 'string') continue;
+      var mm = cell.trim().match(SLASH); if (!mm) continue; slash++;
+      if (+mm[1] > 12) aBig++; if (+mm[2] > 12) bBig++;
+    }
+    var certain = (aBig > 0) !== (bBig > 0), mixed = aBig > 0 && bBig > 0;
+    var order = forceOrder || (aBig > 0 && !bBig ? 'dmy' : bBig > 0 && !aBig ? 'mdy' : ((navigator.language || 'en-US').toLowerCase() === 'en-us' ? 'mdy' : 'dmy'));
     var out = {}, skipped = 0, vals = [];
     for (i = hdr + 1; i < rows.length; i++) {
-      var ds = parseDateCell(rows[i][dc]), v = parseWeightCell(rows[i][wc]);
+      var ds = parseDateCell(rows[i][dc], order), v = parseWeightCell(rows[i][wc]);
       if (!ds || v === null || !isFinite(v) || v <= 0) {
         // rows with a blank weight cell (like future rows holding only predictions) are not "skipped data"
         var wcell = rows[i][wc];
@@ -293,6 +320,7 @@
     vals.sort(function (a, b) { return a - b; });
     var col = function (k) { return k < 26 ? String.fromCharCode(65 + k) : '#' + (k + 1); };
     return { map: out, keys: keys, skipped: skipped, median: vals.length ? vals[Math.floor(vals.length / 2)] : null,
+      order: order, hasSlash: slash > 0, certain: certain, mixed: mixed,
       info: (hdr >= 0 ? 'Found headers. ' : 'No header row found, assuming ') + 'dates in column ' + col(dc) + ', weights in column ' + col(wc) + '.' };
   }
   function pickSheetRows(wb) {
@@ -309,7 +337,7 @@
     var done = function (rows) {
       var p = extractRows(rows);
       if (!p.keys.length) { toast('No dates and weights found in that file'); return; }
-      openImportSheet(file.name, p);
+      openImportSheet(file.name, rows);
     };
     if (/\.(csv|txt)$/.test(name)) { var fr = new FileReader(); fr.onload = function () { done(parseCSV(String(fr.result))); }; fr.readAsText(file); }
     else if (/\.json$/.test(name)) { restoreBackup(file); }
@@ -323,45 +351,68 @@
       r.readAsArrayBuffer(file);
     }
   }
-  function openImportSheet(fname, p) {
-    var guessLb = p.median > 140 && unit() === 'kg';
-    var u = guessLb ? 'lb' : unit();
+  // Decide kg or lb from the typical value. Uses your height when known: a BMI of 14 to 60 is plausible.
+  function guessUnit(median) {
+    var h = state.settings.heightCm, cur = unit();
+    if (h) {
+      var m2 = Math.pow(h / 100, 2), bK = median / m2, bL = median / LB / m2, okK = bK >= 14 && bK <= 60, okL = bL >= 14 && bL <= 60;
+      if (okK && !okL) return { unit: 'kg', note: '' };
+      if (okL && !okK) return { unit: 'lb', note: 'Picked lb because ' + median.toFixed(0) + ' kg would be a BMI of ' + bK.toFixed(0) + ' at your height.' };
+      return { unit: cur, note: 'Typical value ' + median.toFixed(0) + ' could be kg or lb. Check "Values are in" before importing.' };
+    }
+    if (median > 140) return { unit: 'lb', note: 'Values look like lb, so lb is selected.' };
+    if (median >= 90) return { unit: cur, note: 'Typical value ' + median.toFixed(0) + ' could be kg or lb. Check "Values are in" before importing.' };
+    return { unit: 'kg', note: '' };
+  }
+  function openImportSheet(fname, rows) {
+    var p = extractRows(rows), g = guessUnit(p.median);
     openSheet(
       '<h2>Import readings</h2>' +
-      '<div class="list"><div class="li"><span>File</span><span class="r">' + esc(fname) + '</span></div>' +
-      '<div class="li"><span>Readings</span><span class="r num">' + p.keys.length + '</span></div>' +
-      '<div class="li"><span>From</span><span class="r">' + fdate(p.keys[0], true) + ' to ' + fdate(p.keys[p.keys.length - 1], true) + '</span></div>' +
-      '<div class="li"><span>Typical value</span><span class="r num">' + p.median.toFixed(1) + '</span></div>' +
-      '<div class="li"><label for="iu">Values are in</label><select id="iu"><option value="kg"' + (u === 'kg' ? ' selected' : '') + '>kg</option><option value="lb"' + (u === 'lb' ? ' selected' : '') + '>lb</option></select></div>' +
+      '<div class="list" id="imp-info"></div>' +
+      '<div class="list"><div class="li"><label for="iu">Values are in</label><select id="iu"><option value="kg"' + (g.unit === 'kg' ? ' selected' : '') + '>kg</option><option value="lb"' + (g.unit === 'lb' ? ' selected' : '') + '>lb</option></select></div>' +
+      '<div class="li' + (p.hasSlash ? '' : ' hide') + '"><label for="io">Dates are written</label><select id="io"><option value="mdy"' + (p.order === 'mdy' ? ' selected' : '') + '>month/day (03/04 is Mar 4)</option><option value="dmy"' + (p.order === 'dmy' ? ' selected' : '') + '>day/month (03/04 is Apr 3)</option></select></div>' +
       '<div class="li"><label for="im">Existing readings</label><select id="im"><option value="merge">Keep, update same dates</option><option value="replace">Replace everything</option></select></div></div>' +
-      '<div class="list" id="imp-prev"></div><div class="note" id="imp-sum"></div>' +
-      '<div class="note">' + esc(p.info) + (p.skipped ? ' ' + plural(p.skipped, 'row') + ' skipped (not readable).' : '') + (guessLb ? ' Values look like lb, so lb is selected.' : '') + '</div>' +
+      '<div class="list" id="imp-prev"></div><div class="note" id="imp-sum"></div><div class="note" id="imp-warn"></div>' +
       '<button class="btn primary block" id="idoit">Import</button>',
       function (el) {
         function summary() {
           var iu = $('#iu', el).value, mode = $('#im', el).value, ex = 0, diff = 0;
+          $('#imp-info', el).innerHTML =
+            '<div class="li"><span>File</span><span class="r">' + esc(fname) + '</span></div>' +
+            '<div class="li"><span>Readings</span><span class="r num">' + p.keys.length + '</span></div>' +
+            (p.keys.length ? '<div class="li"><span>From</span><span class="r">' + fdate(p.keys[0], true) + ' to ' + fdate(p.keys[p.keys.length - 1], true) + '</span></div>' +
+            '<div class="li"><span>Typical value</span><span class="r num">' + p.median.toFixed(1) + ' ' + iu + '</span></div>' : '');
           p.keys.forEach(function (d) {
             var cur = entryKg(d); if (cur === null) return; ex++;
             var kg = iu === 'lb' ? p.map[d] / LB : p.map[d]; if (Math.abs(kg - cur) > 0.05) diff++;
           });
           var keep = {}; p.keys.forEach(function (d) { keep[d] = 1; });
           var gone = mode === 'replace' ? live().filter(function (e) { return !keep[e.d]; }).length : 0;
-          var rows = p.keys.length <= 6 ? p.keys : p.keys.slice(0, 4), more = p.keys.length - rows.length;
-          $('#imp-prev', el).innerHTML = rows.map(function (d) { return '<div class="li"><span>' + fdate(d, true) + '</span><span class="r num">' + p.map[d].toFixed(1) + ' ' + iu + '</span></div>'; }).join('') +
+          var rows2 = p.keys.length <= 6 ? p.keys : p.keys.slice(0, 4), more = p.keys.length - rows2.length;
+          $('#imp-prev', el).innerHTML = rows2.map(function (d) { return '<div class="li"><span>' + fdate(d, true) + '</span><span class="r num">' + p.map[d].toFixed(1) + ' ' + iu + '</span></div>'; }).join('') +
             (more > 0 ? '<div class="li"><span class="r">and ' + more + ' more, last is ' + fdate(p.keys[p.keys.length - 1], true) + '</span></div>' : '');
           $('#imp-sum', el).innerHTML = '<b>' + plural(p.keys.length - ex, 'new day') + '</b>, ' + plural(ex, 'day') + ' already ' + (ex === 1 ? 'has' : 'have') + ' a reading (' + diff + ' with a different value, will be overwritten).' +
-            (mode === 'replace' ? ' <b class="red">' + plural(gone, 'existing reading') + ' not in this file will be removed.</b>' : '');
+            (mode === 'replace' ? ' <b class="red">' + plural(gone, 'existing reading') + ' not in this file will be removed.</b>' : '') +
+            (iu !== unit() ? ' Values are converted. Your display unit stays ' + unit() + '.' : '');
+          var warn = [];
+          if (g.note) warn.push(g.note);
+          if (p.hasSlash) warn.push(p.mixed ? 'This file mixes day/month and month/day dates. Rows that do not fit the chosen order are skipped.' : p.certain ? 'Date order detected from rows like 13/04.' : 'The file does not say whether 03/04 is Mar 4 or Apr 3. Check the date order above.');
+          if (p.skipped) warn.push(plural(p.skipped, 'row') + ' skipped (not readable).');
+          warn.push(p.info);
+          $('#imp-warn', el).innerHTML = warn.map(esc).join(' ');
+          $('#idoit', el).disabled = !p.keys.length;
         }
-        $('#iu', el).addEventListener('change', summary); $('#im', el).addEventListener('change', summary); summary();
+        $('#iu', el).addEventListener('change', summary); $('#im', el).addEventListener('change', summary);
+        $('#io', el).addEventListener('change', function () { p = extractRows(rows, $('#io', el).value); g = guessUnit(p.median || 70); summary(); });
+        summary();
         $('#idoit', el).addEventListener('click', function () {
           var iu = $('#iu', el).value, mode = $('#im', el).value, now = Date.now(), n = 0, bad = 0;
-          if (mode === 'replace') Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: state.entries[k].kg, t: now, del: true }; });
+          if (mode === 'replace') Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: 0, t: now, del: true }; });
           p.keys.forEach(function (k) {
             var kg = iu === 'lb' ? p.map[k] / LB : p.map[k];
             if (kg < 25 || kg > 400) { bad++; return; }
             state.entries[k] = { kg: +kg.toFixed(4), t: now + 1 }; n++;
           });
-          if (iu !== unit()) { state.settings.unit = iu; state.st = now; }
           persist(); closeSheet(); analyze(); render();
           toast('Imported ' + plural(n, 'reading') + (bad ? ', ' + bad + ' out of range skipped' : ''));
         });
@@ -394,7 +445,7 @@
   function clean(entries) {
     var o = {}; Object.keys(entries || {}).forEach(function (k) {
       var v = entries[k];
-      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v.kg === 'number' && isFinite(v.kg)) o[k] = { kg: v.kg, t: +v.t || 0, del: !!v.del };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v.kg === 'number' && isFinite(v.kg)) o[k] = { kg: v.del ? 0 : v.kg, t: +v.t || 0, del: !!v.del };
     });
     return o;
   }
@@ -402,7 +453,7 @@
     var out = { entries: Object.assign({}, a.entries), settings: Object.assign({}, a.settings), st: a.st || 0 };
     Object.keys(b.entries || {}).forEach(function (k) {
       var l = out.entries[k], r = b.entries[k];
-      if (!l || (r.t || 0) > (l.t || 0)) out.entries[k] = r.del ? { kg: r.kg, t: r.t, del: true } : { kg: r.kg, t: r.t };
+      if (!l || (r.t || 0) > (l.t || 0)) out.entries[k] = r.del ? { kg: 0, t: r.t, del: true } : { kg: r.kg, t: r.t };
     });
     if ((b.st || 0) > out.st) { out.settings = Object.assign({}, DEFAULTS, b.settings); out.st = b.st; }
     return out;
@@ -432,14 +483,35 @@
   function b64dec(b) { return decodeURIComponent(escape(atob(b.replace(/\s/g, '')))); }
   function ghUrl() { return 'https://api.github.com/repos/' + encodeURIComponent(sync.owner) + '/' + encodeURIComponent(sync.repo) + '/contents/' + sync.path.split('/').map(encodeURIComponent).join('/'); }
   function ghHeaders() { return { 'Authorization': 'Bearer ' + sync.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }; }
+  function mkErr(msg, fatal) { var e = new Error(msg); e.fatal = !!fatal; return e; }
+  function ghErr(r) {
+    if (r.status === 401) return mkErr('GitHub does not accept that token. Check it was copied in full and has not expired.', true);
+    if (r.status === 403 || r.status === 429) {
+      if (r.headers.get('x-ratelimit-remaining') === '0' || r.status === 429) {
+        var reset = +r.headers.get('x-ratelimit-reset'), mins = reset ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 60000)) : null;
+        return mkErr('GitHub is rate limiting this token' + (mins ? '. Try again in about ' + plural(mins, 'minute') : '') + '. Your data is safe on this device.', false);
+      }
+      return mkErr('GitHub refused the write. The token needs Contents: read and write on that repo.', true);
+    }
+    if (r.status === 404) return mkErr('GitHub cannot find that repo or file. Check the username and repo name, and that the token covers this repo.', true);
+    return mkErr('GitHub error ' + r.status + '. Will retry.', false);
+  }
   function ghGet() {
     return fetch(ghUrl(), { headers: ghHeaders(), cache: 'no-store' }).then(function (r) {
       if (r.status === 404) return { data: null, sha: null };
-      if (r.status === 401 || r.status === 403) throw new Error('GitHub refused the token. Check it has Contents read and write on that repo.');
-      if (!r.ok) throw new Error('GitHub error ' + r.status);
+      if (!r.ok) throw ghErr(r);
       return r.json().then(function (j) {
-        var data = JSON.parse(b64dec(j.content || ''));
-        return { data: { entries: clean(data.entries), settings: data.settings || {}, st: data.st || 0 }, sha: j.sha };
+        if (Array.isArray(j)) throw mkErr('That file path is a folder in your repo. Use a file name like data.json.', true);
+        // files over 1 MB come back without content: fetch the raw text instead
+        var textP = j.content && j.encoding !== 'none' ? Promise.resolve(b64dec(j.content)) :
+          (j.size > 0 ? fetch(ghUrl(), { headers: Object.assign({}, ghHeaders(), { 'Accept': 'application/vnd.github.raw+json' }), cache: 'no-store' }).then(function (rr) { if (!rr.ok) throw ghErr(rr); return rr.text(); }) : Promise.resolve(''));
+        return textP.then(function (text) {
+          var data;
+          if (!text.trim()) data = { entries: {} };
+          else { try { data = JSON.parse(text); } catch (e) { throw mkErr('The sync file in your repo is not valid. Open it on GitHub and fix or delete it, then sync again.', true); } }
+          if (!data || typeof data.entries !== 'object') throw mkErr('The sync file in your repo does not look like Vim data. Pick another file name or delete it.', true);
+          return { data: { entries: clean(data.entries), settings: data.settings || {}, st: data.st || 0 }, sha: j.sha };
+        });
       });
     });
   }
@@ -448,11 +520,20 @@
     if (sha) body.sha = sha;
     return fetch(ghUrl(), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, ghHeaders()), body: JSON.stringify(body) }).then(function (r) {
       if (r.status === 409 || r.status === 422) return 409;
-      if (r.status === 401 || r.status === 403 || r.status === 404) throw new Error('GitHub refused the write. Is the repo private, spelled right, and the token allowed to write to it?');
-      if (!r.ok) throw new Error('GitHub error ' + r.status);
+      if (!r.ok) throw ghErr(r);
       return 200;
     });
   }
+  // The repo must be private: this app writes your weights into it.
+  function checkPrivate() {
+    return fetch('https://api.github.com/repos/' + encodeURIComponent(sync.owner) + '/' + encodeURIComponent(sync.repo), { headers: ghHeaders(), cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw ghErr(r);
+      return r.json();
+    }).then(function (j) {
+      if (j.private !== true) throw mkErr('That repo is public, so anyone could read your weights. Create a private repo and use that.', true);
+    });
+  }
+  var retryMs = 0, retryT;
   function doSync() {
     if (DEMO || !sync.on || !sync.token || !sync.owner || !sync.repo) return Promise.resolve();
     if (syncing) { again = true; return Promise.resolve(); }
@@ -468,15 +549,20 @@
         return ghPut(r.sha);
       }).then(function (code) {
         if (code === 409 && attempt++ < 2) return step();
-        if (code === 409) throw new Error('Sync conflict, try again');
-        sync.last = Date.now(); saveSync();
+        if (code === 409) throw mkErr('Sync conflict, will retry', false);
+        sync.last = Date.now(); saveSync(); retryMs = 0;
         syncing = false;
         setStatus('Synced at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 'ok');
       });
     };
-    return step().catch(function (e) { syncing = false; setStatus('Sync failed: ' + (e.message || e), 'bad'); })
-      .then(function () { syncing = false; updateChip(); if (again) { again = false; scheduleSync(); } });
+    return step().catch(function (e) {
+      syncing = false;
+      var msg = e && e.fatal !== undefined ? e.message : (e instanceof TypeError ? 'Could not reach GitHub. Will retry when you are online.' : 'Sync problem. Will retry.');
+      setStatus('Sync failed: ' + msg, 'bad');
+      if (!(e && e.fatal)) { retryMs = Math.min(300000, (retryMs || 15000) * 2); clearTimeout(retryT); retryT = setTimeout(doSync, retryMs); }
+    }).then(function () { syncing = false; updateChip(); if (again) { again = false; scheduleSync(); } });
   }
+  window.addEventListener('online', function () { if (sync.on) doSync(); });
 
   /* ---------------------------------------------------------------- charts */
   var builders = {};
@@ -491,9 +577,8 @@
   function weightChart(id, H, opts) {
     opts = opts || {};
     return function (W) {
-      var A = lastA, ser = A.series, last = A.last, h = fcHorizon(A);
+      var A = lastA, ser = A.series, last = A.last, h = effH(A);
       var days = ui.range === 'all' ? ser.length : parseInt(ui.range, 10);
-      if (h) days = Math.max(days, Math.round(h * 0.8)); // keep history readable next to a long forecast
       var n0 = Math.max(ser[0].n, last.n - days + 1), n1 = last.n;
       var vis = ser.filter(function (p) { return p.n >= n0; });
       var fc = null, fpts = null, k = A.calib || 1, z = A.Z80;
@@ -569,11 +654,14 @@
     return '<div class="toolbar"><div class="seg">' + b('30', '1M') + b('90', '3M') + b('all', 'All') + '</div>' +
       '<div class="seg"><button data-action="fc" class="' + (ui.fc ? 'on' : '') + '">Forecast</button></div></div>';
   }
+  function rangeDays(A) { return ui.range === 'all' ? A.series.length : parseInt(ui.range, 10); }
+  function effH(A) { var full = fcHorizon(A); return full ? Math.min(full, Math.max(14, rangeDays(A))) : 0; }
   function legend(A) {
     return '<div class="legend"><span><i style="background:var(--red)"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
       '<span><i class="box"></i>Usual scatter</span>' +
       (A.estCount ? '<span><i class="dot" style="border:1px solid #8e8e93"></i>Filled in</span>' : '') +
-      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dot2"></i>Straight line</span>') : '') + '</div>';
+      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dot2"></i>Straight line</span>') : '') + '</div>' +
+      (ui.fc && A.fc && fcHorizon(A) > effH(A) ? '<div class="sub" style="margin-top:6px">The forecast continues past this chart. Pick a longer range to see all of it.</div>' : '');
   }
 
   /* ---------------------------------------------------------------- screens */
@@ -600,8 +688,9 @@
     if (A.maintain) {
       r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + plural(A.maint.of, 'day') + ' within \u00b1' + fw(A.maint.band) + ' ' + u : '' };
       r2 = { pct: c7 === null ? 0 : Math.max(0, 1 - Math.abs(c7) / A.maint.band), k: 'Last 7 days', v: c7 === null ? '--' : sgn(dsp(c7)), unitLabel: u, n: 'closer to 0 is steadier' };
+      if (A.maint && A.maint.inRange === 0) r1.n = 'You are ' + fw(Math.abs(A.currentKg - goal)) + ' ' + u + (A.currentKg > goal ? ' above' : ' below') + ' your range, so it starts counting once you are inside';
     } else {
-      var gt = goal ? fw(A.lostKg) + ' of ' + fw(A.startKg - goal) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
+      var gt = A.lostKg <= 0 ? 'Trend is not below your start yet' : goal ? fw(A.lostKg) + ' of ' + fw(A.startKg - goal) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
       r1 = { pct: A.goalProgress || 0, k: goal ? 'Goal progress' : 'First 5%', v: Math.round((A.goalProgress || 0) * 100), unitLabel: '%', n: gt };
       var loss7 = c7 === null ? null : -c7;
       r2 = { pct: loss7 === null ? 0 : clamp(loss7 / A.paceTarget.kgPerWeek, 0, 1), k: 'Last 7 days', v: loss7 === null ? '--' : fw(Math.abs(loss7)), unitLabel: loss7 !== null && loss7 < 0 ? u + ' gained' : u + ' lost',
@@ -635,11 +724,12 @@
 
     var t = '';
     if (A.maintain) t += '<div class="card tile"><div class="k">Drift</div><div class="v green num">' + (A.maint.drift !== null ? sgn(dsp(A.maint.drift), 2) : '--') + '<small>' + u + '/wk</small></div><div class="n">best streak ' + plural(st.longest, 'day') + '</div></div>';
-    else t += '<div class="card tile"><div class="k">Pace</div><div class="v green num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n">' + (A.rate ? 'best streak ' + plural(st.longest, 'day') : 'needs about 10 readings') + '</div></div>';
+    else t += '<div class="card tile"><div class="k">Pace</div><div class="v green num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n">' + (A.rate ? 'best streak ' + plural(st.longest, 'day') : 'needs 7 readings') + '</div></div>';
     if (A.maintain) {
       t += '<div class="card tile"><div class="k">Goal range</div><div class="v num">' + fw(goal) + '<small>±' + fw(A.maint.band) + '</small></div><div class="n">' + (A.maint.drift !== null ? 'drifting ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + '/wk' : '') + '</div></div>';
     } else {
-      t += '<div class="card tile"><div class="k">Lost so far</div><div class="v red num">' + fw(A.lostKg) + '<small>' + u + '</small></div><div class="n num">' + A.lostPct.toFixed(1) + '% of start</div></div>';
+      t += A.lostKg < 0 ? '<div class="card tile"><div class="k">Gained so far</div><div class="v orange num">' + fw(-A.lostKg) + '<small>' + u + '</small></div><div class="n num">' + Math.abs(A.lostPct).toFixed(1) + '% above start</div></div>'
+        : '<div class="card tile"><div class="k">Lost so far</div><div class="v red num">' + fw(A.lostKg) + '<small>' + u + '</small></div><div class="n num">' + A.lostPct.toFixed(1) + '% of start</div></div>';
     }
     if (A.bmi) t += '<div class="card tile"><div class="k">BMI</div><div class="v num">' + A.bmi.value.toFixed(1) + '</div><div class="n">' + A.bmi.label + (A.bmi.next ? '. ' + fw(A.bmi.next.kgToGo) + ' ' + u + ' to ' + A.bmi.next.label : '') + '</div></div>';
     else t += '<div class="card tile"><div class="k">BMI</div><div class="v">--</div><div class="n"><button class="chip" data-tab="settings">Add height</button></div></div>';
@@ -647,7 +737,7 @@
     if (!A.maintain) {
       if (e) t += '<div class="card tile"><div class="k">Goal around</div><div class="v cyan">' + e.short + '</div><div class="n">' + (e.win ? 'likely ' + e.win : '') + '</div></div>';
       else if (A.eta && A.eta.reached) t += '<div class="card tile"><div class="k">Goal</div><div class="v cyan">Reached</div><div class="n">Trend is at or below goal</div></div>';
-      else t += '<div class="card tile"><div class="k">Goal date</div><div class="v">--</div><div class="n">' + (goal ? (A.hasModel ? 'Pace is flat or rising' : 'Needs 7 readings') : '<button class="chip" data-tab="settings">Set a goal</button>') + '</div></div>';
+      else t += '<div class="card tile"><div class="k">Goal date</div><div class="v">--</div><div class="n">' + (goal ? (A.hasModel ? (A.rate && A.rate.lossPerWeek > 0.05 ? 'More than 8 months away at this pace' : 'Pace is flat or rising') : 'Needs 7 readings') : '<button class="chip" data-tab="settings">Set a goal</button>') + '</div></div>';
     }
     h += '<div class="tiles">' + t + '</div>';
     return h;
@@ -684,13 +774,17 @@
       var p30 = A.fc.points[30];
       f += '<div class="lead num">In 30 days: about ' + fw(p30.mean) + ' ' + u + '</div><div class="sub num">Likely range ' + fw(p30.mean - A.Z80 * p30.sdRc) + ' to ' + fw(p30.mean + A.Z80 * p30.sdRc) + ' ' + u + '. Set a goal weight in Settings to get a date.</div>';
     } else if (A.eta && A.eta.reached) f += '<div class="lead">Your trend is at or below your goal.</div>';
-    else if (!A.eta || !A.eta.median) f += '<div class="lead">No date yet.</div><div class="sub">In most simulated futures the trend does not reach ' + fw(A.goalKg) + ' ' + u + ' within 8 months at your recent pace. A slow or flat recent trend can do that.</div>';
+    else if (!A.eta || !A.eta.median) f += A.rate && A.rate.lossPerWeek > 0.05
+      ? '<div class="lead">More than 8 months away.</div><div class="sub">At your recent pace of ' + dsp(A.rate.lossPerWeek).toFixed(2) + ' ' + u + ' per week, most simulated futures do not reach ' + fw(A.goalKg) + ' ' + u + ' within 8 months.</div>'
+      : '<div class="lead">No date yet.</div><div class="sub">Your recent trend is flat or rising, so there is no date to estimate. A slow or flat stretch can do that.</div>';
     else {
-      var e = etaText(A);
+      var e = etaText(A), dip = null;
+      if (A.eta.sim && A.eta.sim.cumRead) for (var qh = 0; qh < A.eta.sim.cumRead.length; qh++) if (A.eta.sim.cumRead[qh] >= 0.1) { dip = S.dayStr(A.last.n + qh); break; }
       f += '<div class="lead">Most likely ' + e.date + '</div>';
       f += '<div class="sub">' + (e.win ? 'Likely window <b>' + e.win + '</b> (10th to 90th percentile). ' : '') +
-        (A.eta.firstReading ? 'A single reading could dip under goal as early as ' + fdate(A.eta.firstReading) + ', but the trend is the number that counts. ' : '') + '</div>';
-      if (A.eta.straight) f += '<div class="sub" style="margin-top:6px">A straight line at today\'s pace says ' + fdate(A.eta.straight) + '. Real loss usually slows, which is why the likely date is later.</div>';
+        (dip ? 'There is a 1 in 10 chance a single reading has already dipped under your goal by ' + fdate(dip) + ', but the trend is the number that counts.' : '') + '</div>';
+      if (A.eta.straight) f += '<div class="sub" style="margin-top:6px">' + (A.eta.straight < A.eta.median ? 'A straight line at today\'s pace says ' + fdate(A.eta.straight) + '. Real loss usually slows, which is why the likely date is later.'
+        : A.eta.straight === A.eta.median ? 'A straight line at today\'s pace gives the same date.' : 'A straight line at today\'s pace says ' + fdate(A.eta.straight) + ', later than the likely date because your pace has been picking up.') + '</div>';
       if (state.settings.goalDate && A.targetProb !== undefined) {
         var pc = Math.round(A.targetProb * 100);
         f += '<div class="chips"><span class="chip ' + (pc >= 50 ? 'green' : 'orange') + ' num">' + pc + '% chance by ' + fdate(state.settings.goalDate, true) + '</span></div>';
@@ -698,7 +792,7 @@
       f += '<div style="margin-top:12px"><div class="sub" style="font-weight:600">Chance of being there by each date</div>' + slot('pb', probBuilder(160)) + '</div>';
       var v0 = A.rate ? clamp(A.rate.lossPerWeek, 0.1, 1.2) : 0.5;
       f += '<div style="margin-top:16px"><div class="sub" style="font-weight:600">What if my pace were...</div>' +
-        '<input type="range" id="wi" style="width:100%" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="' + (u === 'lb' ? '0.1' : '0.05') + '" value="' + dsp(v0).toFixed(2) + '" data-level="' + A.fc.level + '" data-goal="' + A.goalKg + '" data-last="' + A.last.n + '" aria-label="Weekly pace">' +
+        '<input type="range" id="wi" style="width:100%" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="any" value="' + dsp(v0) + '" data-level="' + A.fc.level + '" data-goal="' + A.goalKg + '" data-last="' + A.last.n + '" aria-label="Weekly pace">' +
         '<div class="lead num" id="wi-out" style="margin:4px 0 0"></div></div>';
     }
     f += '</div>';
@@ -738,6 +832,7 @@
     // flat stretch
     var fl = '<div class="card c-6"><h3>Flat stretches</h3>';
     if (!A.stall) fl += '<div class="sub">' + (A.maintain ? 'Not used while keeping steady.' : 'Needs about 3 weeks of readings.') + '</div>';
+    else if (A.stall.now && A.stall.change10 > 0.15) fl += '<div class="lead">Your trend has gone up ' + dsp(A.stall.change10).toFixed(2) + ' ' + u + ' in 10 days.</div><div class="sub">Rises like this are usually water, salt or a few heavier days, not fat. Keep logging and look at the trend over a few weeks.</div>';
     else if (A.stall.now) fl += '<div class="lead">Your trend has moved only ' + dsp(Math.abs(A.stall.change10)).toFixed(2) + ' ' + u + ' in 10 days.</div><div class="sub">Short flat spells are common and often water. Keep logging so the trend can show what happens next.</div>';
     else fl += '<div class="lead">Moving as expected.</div><div class="sub">Trend changed ' + sgn(dsp(A.stall.change10), 2) + ' ' + u + ' over 10 days.</div>';
     fl += '</div>';
@@ -769,10 +864,10 @@
       '<div class="li' + (hcm ? ' hide' : '') + '" id="hrow-ft"><label for="f-ft">Height</label><span class="pair"><input id="f-ft" class="num w2" type="text" inputmode="decimal" placeholder="5" value="' + ft + '"> ft <input id="f-in" class="num w2" type="text" inputmode="decimal" placeholder="6.5" value="' + inch + '"> in</span></div>' +
       '<div class="li"><label for="f-m">I am</label><select id="f-m">' + opt('lose', 'Losing weight', s.mode) + opt('maintain', 'Keeping weight steady', s.mode) + '</select></div>' +
       '<div class="li"><label for="f-g" id="f-g-l">' + (s.mode === 'maintain' ? 'Target weight' : 'Goal weight') + ' (' + u + ')</label><input id="f-g" class="num w1" type="text" inputmode="decimal" placeholder="optional" value="' + (s.goalKg ? fw(s.goalKg, 1) : '') + '"></div>' +
-      '<div class="li' + (s.mode === 'maintain' ? ' hide' : '') + '" id="row-gd"><label for="f-gd">Target date</label><input id="f-gd" class="w3" type="date" value="' + esc(s.goalDate || '') + '"></div>' +
+      '<div class="li' + (s.mode === 'maintain' ? ' hide' : '') + '" id="row-gd"><label for="f-gd">Target date</label><span class="pair"><input id="f-gd" class="w3" type="date" value="' + esc(s.goalDate || '') + '"><button class="chip" data-action="clear-date" aria-label="Clear target date">Clear</button></span></div>' +
       '<div class="li' + (s.mode === 'maintain' ? '' : ' hide') + '" id="row-band"><label for="f-b">Stay within ± (' + u + ')</label><input id="f-b" class="num w1" type="text" inputmode="decimal" value="' + fw(s.bandKg || 1, 1) + '"></div>' +
       '<div class="li"><label for="f-bs">BMI categories</label><select id="f-bs">' + opt('who', 'Standard (WHO)', s.bmiScale) + opt('asia', 'Asia-Pacific cut-offs', s.bmiScale) + '</select></div></div>' +
-      '<div class="ferr hide" id="perr"></div><div class="row-btns" style="margin-top:0"><button class="btn primary" data-action="save-profile">Save</button></div>';
+      '<div class="ferr hide" id="perr"></div><div class="note" id="psaved">Changes here save automatically.</div>';
 
     h += '<div class="h2">Your data</div><div class="list">' +
       '<button class="li" data-action="pick-import"><span>Import Excel or CSV</span><span class="r">&rsaquo;</span></button>' +
@@ -803,39 +898,67 @@
     return h;
   }
 
+  // Saves the profile form. Returns true when saved. Untouched fields keep their stored value, so
+  // converting through lb or ft/in never drifts the numbers.
   function saveProfile() {
-    var s = state.settings, errs = [], g = $('#f-g').value.trim(), hu = $('#f-hu').value, mode = $('#f-m').value;
-    var u = unit(), heightCm = null, goalKg = null, goalDate = '', bandKg = s.bandKg || 1;
+    var s = state.settings, errs = [], u = unit(), hu = s.hunit || 'cm', mode = $('#f-m').value, A0 = lastA;
+    var heightCm = s.heightCm, goalKg = s.goalKg, goalDate = '', bandKg = s.bandKg || 1;
     if (hu === 'cm') {
       var hv = $('#f-h').value.trim();
-      if (hv) { var c = parseNum(hv); if (!isFinite(c) || c < 100 || c > 230) errs.push('Height should be between 100 and 230 cm (decimals are fine, like 169.5).'); else heightCm = c; }
+      if (!hv) heightCm = null;
+      else if (!s.heightCm || hv !== String(num(s.heightCm, 1))) { var c = parseNum(hv); if (!isFinite(c) || c < 100 || c > 230) errs.push('Height should be between 100 and 230 cm (decimals are fine, like 169.5).'); else heightCm = c; }
     } else {
-      var ft = $('#f-ft').value.trim(), inc = $('#f-in').value.trim();
-      if (ft || inc) {
+      var ft = $('#f-ft').value.trim(), inc = $('#f-in').value.trim(), tin = s.heightCm ? s.heightCm / 2.54 : null;
+      var ft0 = tin ? String(Math.floor(tin / 12)) : '', in0 = tin ? String(num(tin - Math.floor(tin / 12) * 12, 1)) : '';
+      if (!ft && !inc) heightCm = null;
+      else if (!(s.heightCm && ft === ft0 && inc === in0)) {
         var f = ft ? parseNum(ft) : 0, i = inc ? parseNum(inc) : 0, cm = (f * 12 + i) * 2.54;
         if (!isFinite(f) || !isFinite(i) || f < 0 || i < 0 || cm < 100 || cm > 230) errs.push('Height should be between 3 ft 4 in and 7 ft 7 in (decimals are fine, like 5 ft 6.5 in).'); else heightCm = cm;
       }
     }
-    if (g) { var gv = parseNum(g), gk = fromDsp(gv); if (!isFinite(gv) || gk < 25 || gk > 400) errs.push('Goal weight looks off. Check the number and the unit (' + u + ').'); else goalKg = gk; }
-    var gd = $('#f-gd').value;
-    if (mode === 'lose' && gd) { if (gd <= S.localToday()) errs.push('Target date should be in the future.'); else goalDate = gd; }
+    var g = $('#f-g').value.trim();
+    if (!g) goalKg = null;
+    else if (!s.goalKg || g !== fw(s.goalKg, 1)) { var gv = parseNum(g), gk = fromDsp(gv); if (!isFinite(gv) || gk < 30 || gk > 400) errs.push('Goal weight looks off. Check the number and the unit (' + u + ').'); else goalKg = gk; }
+    var gd = mode === 'lose' ? $('#f-gd').value : '';
     if (mode === 'maintain') {
-      var bv = parseNum($('#f-b').value), bk = fromDsp(bv);
-      if (!isFinite(bv) || bk <= 0 || bk > 20) errs.push('The range should be a positive number, like 1.0.'); else bandKg = bk;
+      var bt = $('#f-b').value.trim();
+      if (!s.bandKg || bt !== fw(s.bandKg, 1)) { var bv = parseNum(bt), bk = fromDsp(bv); if (!isFinite(bv) || bk <= 0 || bk > 20) errs.push('The range should be a positive number, like 1.0.'); else bandKg = bk; }
       if (!goalKg) errs.push('Enter the weight you want to keep.');
     }
-    var box = $('#perr');
-    if (errs.length) { box.innerHTML = errs.map(esc).join('<br>'); box.classList.remove('hide'); return; }
+    var cur = A0 && A0.series && A0.series.length ? A0.currentKg : null;
+    if (goalKg && heightCm && !errs.length) {
+      var bmiG = goalKg / Math.pow(heightCm / 100, 2);
+      if (bmiG < 18.5) errs.push('A goal of ' + fw(goalKg) + ' ' + u + ' is a BMI of ' + bmiG.toFixed(1) + ', below the healthy range. The lowest healthy weight at your height is ' + fw(18.5 * Math.pow(heightCm / 100, 2)) + ' ' + u + '.');
+    }
+    if (mode === 'lose' && goalKg && cur !== null && goalKg > cur + 0.5 && !errs.length) errs.push('Your goal (' + fw(goalKg) + ' ' + u + ') is above your current weight (' + fw(cur) + ' ' + u + '). Switch to "Keeping weight steady", or set a lower goal.');
+    if (gd) {
+      if (!goalKg) errs.push('A target date needs a goal weight. Add one, or clear the date.');
+      else if (gd <= S.localToday()) errs.push('Target date should be in the future.');
+      else if (cur !== null && cur > goalKg && !errs.length) {
+        var wks = (S.dayNum(gd) - S.dayNum(S.localToday())) / 7, need = (cur - goalKg) / wks, lim = 0.01 * cur;
+        if (need > lim) errs.push('That date needs ' + dsp(need).toFixed(2) + ' ' + u + ' per week, above the 1% of body weight per week that is usually treated as an upper limit. The earliest date at that limit is ' + fdate(S.dayStr(S.dayNum(S.localToday()) + Math.ceil((cur - goalKg) / lim * 7)), true) + '.');
+      }
+      if (!errs.length) goalDate = gd;
+    }
+    var box = $('#perr'), note = $('#psaved');
+    if (errs.length) { box.innerHTML = errs.map(esc).join('<br>'); box.classList.remove('hide'); if (note) note.textContent = 'Not saved yet. Fix the message above.'; return false; }
     box.classList.add('hide');
-    s.hunit = hu; s.heightCm = heightCm === null ? null : +heightCm.toFixed(2); s.goalKg = goalKg === null ? null : +goalKg.toFixed(3);
+    var relayout = mode !== s.mode;
+    s.heightCm = heightCm === null ? null : +heightCm.toFixed(2); s.goalKg = goalKg === null ? null : +goalKg.toFixed(3);
     s.goalDate = goalDate; s.mode = mode; s.bandKg = +bandKg.toFixed(3); s.bmiScale = $('#f-bs').value;
-    state.st = Date.now(); persist(); analyze(); render(); toast('Saved');
+    state.st = Date.now(); persist(); analyze();
+    if (relayout) render(); else if (note) note.textContent = 'Saved.';
+    return true;
   }
   function saveSyncForm() {
     var o = $('#y-o').value.trim(), r = $('#y-r').value.trim(), p = $('#y-p').value.trim() || 'data.json', t = $('#y-t').value.trim();
     if (!o || !r || !t) { toast('Fill in username, repo and token'); return; }
-    sync.owner = o; sync.repo = r; sync.path = p; sync.token = t; sync.on = true; saveSync();
-    doSync().then(function () { if (ui.tab === 'settings') render(); });
+    sync.owner = o; sync.repo = r; sync.path = p; sync.token = t; saveSync();
+    setStatus('Checking the repo...');
+    checkPrivate().then(function () { sync.on = true; saveSync(); return doSync(); }).then(function () {
+      if (ui.cls === 'bad') { sync.on = false; saveSync(); ui.msg += ' Sync is off until this works.'; }
+    }, function (e) { sync.on = false; saveSync(); setStatus(e && e.fatal !== undefined ? e.message : 'Could not reach GitHub. Check your connection and try again.', 'bad'); })
+      .then(function () { if (ui.tab === 'settings') render(); });
   }
 
   var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, settings: viewSettings };
@@ -877,16 +1000,16 @@
     else if (a === 'export-csv') exportCSV();
     else if (a === 'export-xlsx') exportXLSX();
     else if (a === 'backup') backup();
-    else if (a === 'save-profile') saveProfile();
+    else if (a === 'clear-date') { var gdI = $('#f-gd'); if (gdI) { gdI.value = ''; markDates(); saveProfile(); } }
     else if (a === 'to-maintain') {
       state.settings.mode = 'maintain'; state.settings.goalDate = ''; state.st = Date.now(); persist(); analyze(); render(); toast('Now keeping weight steady around ' + fw(state.settings.goalKg) + ' ' + unit());
     }
     else if (a === 'erase') {
-      openSheet('<h2>Erase all readings?</h2><div class="sub">This clears every reading on this device. If sync is on, the repo copy is cleared too. A backup file first is a good idea.</div>' +
+      openSheet('<h2>Erase all readings?</h2><div class="sub">This clears every reading on this device, and the sync file in your repo is overwritten with an empty one. Older versions stay in the private repo git history until you delete the repo. A backup file first is a good idea.</div>' +
         '<div class="row-btns"><button class="btn danger" id="erase-go">Erase everything</button><button class="btn" id="erase-no">Cancel</button></div>', function (el) {
         $('#erase-no', el).addEventListener('click', closeSheet);
         $('#erase-go', el).addEventListener('click', function () {
-          var now = Date.now(); Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: state.entries[k].kg, t: now, del: true }; });
+          var now = Date.now(); Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: 0, t: now, del: true }; });
           persist(); closeSheet(); analyze(); render(); toast('All readings erased');
         });
       });
@@ -895,13 +1018,19 @@
     else if (a === 'sync-off') { sync.on = false; sync.token = ''; saveSync(); setStatus('Disconnected. Local data kept.'); render(); }
   });
   document.addEventListener('change', function (e) {
-    var t = e.target;
-    if (t.id === 'f-u') { state.settings.unit = t.value; state.st = Date.now(); persist(); analyze(); render(); return; }
-    if (t.id === 'f-hu') { var cm = t.value === 'cm'; $('#hrow-cm').classList.toggle('hide', !cm); $('#hrow-ft').classList.toggle('hide', cm); return; }
-    if (t.id === 'f-m') {
+    var t = e.target, id = t.id || '';
+    if (id === 'f-u') {
+      var nu = t.value;
+      if (!saveProfile()) { t.value = unit(); return; }
+      state.settings.unit = nu; state.st = Date.now(); persist(); analyze(); render(); return;
+    }
+    if (id === 'f-hu') { state.settings.hunit = t.value; state.st = Date.now(); persist(); render(); return; }
+    if (id === 'f-m') {
       var m = t.value === 'maintain'; $('#row-gd').classList.toggle('hide', m); $('#row-band').classList.toggle('hide', !m);
       $('#f-g-l').textContent = (m ? 'Target weight' : 'Goal weight') + ' (' + unit() + ')';
     }
+    if (id.indexOf('f-') === 0) { saveProfile(); return; }
+    if (id.indexOf('y-') === 0) { var key = { 'y-o': 'owner', 'y-r': 'repo', 'y-p': 'path', 'y-t': 'token' }[id]; if (key) { sync[key] = t.value.trim(); if (key === 'path' && !sync.path) sync.path = 'data.json'; saveSync(); } }
   });
   document.addEventListener('input', function (e) { if (e.target.id === 'wi') updateWhatIf(); if (e.target.type === 'date') markDates(); });
   document.addEventListener('change', function (e) { if (e.target.type === 'date') markDates(); });
@@ -949,7 +1078,9 @@
       navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (r) { r.update(); }).catch(function () { /* offline cache is optional */ });
     }
     doSync();
+    var dayNow = S.localToday();
+    setInterval(function () { var d2 = S.localToday(); if (d2 !== dayNow) { dayNow = d2; analyze(); render(); } }, 60000);
   }
   init();
-  window.__wt = { state: function () { return state; }, setTab: function (t) { goTab(t); }, ui: ui, render: render, analyze: function () { return lastA; } };
+  window.__wt = { state: function () { return state; }, setTab: function (t) { goTab(t); }, ui: ui, render: render, analyze: function () { return lastA; }, rerun: function () { return analyze(); } };
 })();
