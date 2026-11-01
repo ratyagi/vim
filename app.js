@@ -4,7 +4,7 @@
   'use strict';
   var S = window.Stats, C = window.Charts;
   var LB = 2.2046226218, DAY = 86400000;
-  var KEY = 'wt.v1', SKEY = 'wt.sync';
+  var KEY = 'wt.v1', SKEY = 'wt.sync', MINDATE = '2000-01-01';
   var DEFAULTS = { unit: 'kg', hunit: 'cm', heightCm: null, goalKg: null, goalDate: '', mode: 'lose', bandKg: 1, bmiScale: 'who' };
   var DEMO = location.hash === '#demo';
   var THEMES = {
@@ -44,12 +44,24 @@
     try {
       var j = JSON.parse(localStorage.getItem(KEY));
       if (j && j.entries) { Object.keys(j.entries).forEach(function (k) { if (j.entries[k] && j.entries[k].del) j.entries[k].kg = 0; }); }
+      if (j && j.entries) { Object.keys(j.entries).forEach(function (k) { if (k < MINDATE || !/^\d{4}-\d{2}-\d{2}$/.test(k)) delete j.entries[k]; }); }
       if (j && j.entries) return { entries: j.entries, settings: Object.assign({}, DEFAULTS, j.settings), st: j.st || 0 };
     } catch (e) { /* fall through */ }
     return { entries: {}, settings: Object.assign({}, DEFAULTS), st: 0 };
   }
+  // Pull in whatever another tab saved, keeping the newest value per date.
+  function pull() {
+    if (DEMO) return false;
+    try {
+      var j = JSON.parse(localStorage.getItem(KEY)); if (!j || !j.entries) return false;
+      var before = canon(state);
+      state = merge(state, { entries: clean(j.entries), settings: j.settings || {}, st: j.st || 0 });
+      return canon(state) !== before;
+    } catch (e) { return false; }
+  }
   function persist(sched) {
     if (DEMO) return;
+    pull();
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { toast('Could not save in this browser'); }
     if (sched !== false) scheduleSync();
   }
@@ -146,7 +158,7 @@
       '<button class="step" id="lp" aria-label="Up 0.1">+</button></div>' +
       '<div class="sub center" style="margin-top:8px" id="ld-hint">' + unit() + '</div>' +
       '<div class="chips-row"><button class="chip" id="d-today">Today</button><button class="chip" id="d-yest">Yesterday</button>' +
-      '<input id="ld" class="datein" type="date" value="' + date + '" max="' + today + '" aria-label="Date"></div>' +
+      '<input id="ld" class="datein" type="date" value="' + date + '" min="' + MINDATE + '" max="' + today + '" aria-label="Date"></div>' +
       '<div class="ferr hide" id="lerr"></div>' +
       '<button class="btn primary block" id="lsave">Save</button>' +
       '<button class="btn danger block hide" id="ldel" style="margin-top:10px">Delete this reading</button>',
@@ -207,7 +219,8 @@
     if (!isFinite(v)) return 'Enter a number, like 72.4';
     var kg = fromDsp(v);
     if (kg < 25 || kg > 400) return 'That looks off. Check the number and the unit (' + unit() + ').';
-    if (!date) return 'Pick a date';
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return 'Pick a date';
+    if (date < MINDATE) return 'Dates before 2000 are not supported. Check the year.';
     if (date > S.localToday()) return 'Pick today or an earlier date';
     return '';
   }
@@ -433,19 +446,27 @@
   function restoreBackup(file) {
     var r = new FileReader();
     r.onload = function () {
-      try {
-        var j = JSON.parse(String(r.result));
-        if (!j || typeof j.entries !== 'object') throw new Error('bad');
-        state = merge(state, { entries: clean(j.entries), settings: j.settings || {}, st: j.st || 0 });
-        persist(); analyze(); render(); toast('Backup restored');
-      } catch (e) { toast('That is not a backup file'); }
+      var j, ents;
+      try { j = JSON.parse(String(r.result)); if (!j || typeof j.entries !== 'object') throw new Error('bad'); ents = clean(j.entries); } catch (e) { toast('That is not a backup file'); return; }
+      var keys = Object.keys(ents).filter(function (k) { return !ents[k].del; });
+      if (!keys.length) { toast('That backup has no readings in it'); return; }
+      // Restoring is an explicit choice, so the backup wins over anything newer here (including an erase).
+      var now = Date.now(), added = 0, changed = 0;
+      keys.forEach(function (k) {
+        var cur = state.entries[k];
+        if (!cur || cur.del) added++; else if (Math.abs(cur.kg - ents[k].kg) > 0.0005) changed++;
+        state.entries[k] = { kg: ents[k].kg, t: now };
+      });
+      if (j.settings) { state.settings = Object.assign({}, DEFAULTS, j.settings); state.st = Math.max(Date.now(), state.st || 0); }
+      persist(); analyze(); render();
+      toast('Restored ' + plural(keys.length, 'reading') + (added || changed ? ' (' + added + ' added, ' + changed + ' changed)' : ''));
     };
     r.readAsText(file);
   }
   function clean(entries) {
     var o = {}; Object.keys(entries || {}).forEach(function (k) {
       var v = entries[k];
-      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v.kg === 'number' && isFinite(v.kg)) o[k] = { kg: v.del ? 0 : v.kg, t: +v.t || 0, del: !!v.del };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && k >= MINDATE && v && typeof v.kg === 'number' && isFinite(v.kg)) o[k] = { kg: v.del ? 0 : v.kg, t: +v.t || 0, del: !!v.del };
     });
     return o;
   }
@@ -608,7 +629,7 @@
         void sc;
       }
       return '<div class="readout num" id="ro-' + id + '">' + readout(null) + '</div>' + C.lineChart({
-        id: id, W: W, H: H, n0: n0, n1: n1, readout: readout, goal: A.goalKg ? dsp(A.goalKg) : null, fc: fc, refs: refs,
+        id: id, W: W, H: H, n0: n0, n1: n1, readout: readout, goal: A.goalKg ? dsp(A.goalKg) : null, fc: fc, refs: refs, today: fc && A.gap >= 2 ? A.todayN : null,
         band: withBand.length > 1 ? { lo: withBand.map(function (p) { return { n: p.n, v: dsp(p.lo) }; }), hi: withBand.map(function (p) { return { n: p.n, v: dsp(p.hi) }; }) } : null,
         label: 'Weight over time. Latest trend ' + fw(last.trend) + ' ' + u,
         trend: vis.map(function (p) { return { n: p.n, v: dsp(p.trend) }; }),
@@ -701,7 +722,10 @@
     var rs = function (o, cls) { return '<div class="rstat"><div class="k ' + cls + '">' + o.k + '</div><div class="v ' + cls + ' num">' + o.v + '<small>' + o.unitLabel + '</small></div><div class="n num">' + o.n + '</div></div>'; };
 
     var warns = '';
-    if (A.reached && !A.maintain && goal) {
+    if (A.goalAbove) {
+      warns += '<div class="card"><h3>Your goal is above your weight</h3><div class="sub">Your goal of ' + fw(goal) + ' ' + u + ' is higher than where you started (' + fw(Math.max(A.startKg, A.firstRawKg)) + ' ' + u + '), so there is nothing to lose toward. Change the goal, or switch to keeping your weight steady.</div>' +
+        '<div class="row-btns"><button class="btn primary" data-tab="settings">Open settings</button><button class="btn" data-action="to-maintain">Keep it steady</button></div></div>';
+    } else if (A.reached && !A.maintain && goal) {
       warns += '<div class="card"><h3>You reached your goal</h3><div class="sub">Your trend weight is at or below ' + fw(goal) + ' ' + u + '. Pick what comes next.</div>' +
         '<div class="row-btns"><button class="btn primary" data-action="to-maintain">Keep it steady</button><button class="btn" data-tab="settings">Set a new goal</button></div></div>';
     }
@@ -766,10 +790,13 @@
 
     // forecast
     var f = '<div class="card c-7"><h3>' + (A.maintain ? 'Staying in range' : 'When you could reach your goal') + '</h3>';
-    if (!A.fc) f += '<div class="lead">Not enough data yet.</div><div class="sub">Needs 7 readings.</div>';
+    if (A.stale && A.hasModel) f += '<div class="lead">Forecast paused.</div><div class="sub">Your last reading was ' + A.gap + ' days ago, too long to project from. Log a reading and it picks up again.</div>';
+    else if (!A.fc) f += '<div class="lead">Not enough data yet.</div><div class="sub">Needs 7 readings.</div>';
     else if (A.maintain) {
       f += '<div class="lead num">' + A.maint.inRange + ' of ' + A.maint.of + ' recent days inside your range</div><div class="sub">Range is ' + fw(A.goalKg - A.maint.band) + ' to ' + fw(A.goalKg + A.maint.band) + ' ' + u + '. ' +
         (A.maint.drift !== null ? 'Trend is moving ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + ' per week.' : '') + '</div>';
+    } else if (A.goalAbove) {
+      f += '<div class="lead">Goal is above your weight.</div><div class="sub">Pick a goal below ' + fw(Math.max(A.startKg, A.firstRawKg)) + ' ' + u + ' in Settings to get a date.</div>';
     } else if (!A.goalKg) {
       var p30 = A.fc.points[30];
       f += '<div class="lead num">In 30 days: about ' + fw(p30.mean) + ' ' + u + '</div><div class="sub num">Likely range ' + fw(p30.mean - A.Z80 * p30.sdRc) + ' to ' + fw(p30.mean + A.Z80 * p30.sdRc) + ' ' + u + '. Set a goal weight in Settings to get a date.</div>';
@@ -779,8 +806,9 @@
       : '<div class="lead">No date yet.</div><div class="sub">Your recent trend is flat or rising, so there is no date to estimate. A slow or flat stretch can do that.</div>';
     else {
       var e = etaText(A), dip = null;
-      if (A.eta.sim && A.eta.sim.cumRead) for (var qh = 0; qh < A.eta.sim.cumRead.length; qh++) if (A.eta.sim.cumRead[qh] >= 0.1) { dip = S.dayStr(A.last.n + qh); break; }
+      if (A.eta.sim && A.eta.sim.cumRead) for (var qh = 0; qh < A.eta.sim.cumRead.length; qh++) if (A.eta.sim.cumRead[qh] >= 0.1) { dip = S.dayStr(Math.max(A.todayN, A.last.n + qh)); break; }
       f += '<div class="lead">Most likely ' + e.date + '</div>';
+      if (A.gap >= 2) f += '<div class="sub">Counted from today. Your last reading was ' + A.gap + ' days ago' + (A.eta.maybeNow >= 0.5 ? ', and there is a ' + Math.round(A.eta.maybeNow * 100) + '% chance you are already there. Log a reading to check.' : '.') + '</div>';
       f += '<div class="sub">' + (e.win ? 'Likely window <b>' + e.win + '</b> (10th to 90th percentile). ' : '') +
         (dip ? 'There is a 1 in 10 chance a single reading has already dipped under your goal by ' + fdate(dip) + ', but the trend is the number that counts.' : '') + '</div>';
       if (A.eta.straight) f += '<div class="sub" style="margin-top:6px">' + (A.eta.straight < A.eta.median ? 'A straight line at today\'s pace says ' + fdate(A.eta.straight) + '. Real loss usually slows, which is why the likely date is later.'
@@ -792,7 +820,7 @@
       f += '<div style="margin-top:12px"><div class="sub" style="font-weight:600">Chance of being there by each date</div>' + slot('pb', probBuilder(160)) + '</div>';
       var v0 = A.rate ? clamp(A.rate.lossPerWeek, 0.1, 1.2) : 0.5;
       f += '<div style="margin-top:16px"><div class="sub" style="font-weight:600">What if my pace were...</div>' +
-        '<input type="range" id="wi" style="width:100%" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="any" value="' + dsp(v0) + '" data-level="' + A.fc.level + '" data-goal="' + A.goalKg + '" data-last="' + A.last.n + '" aria-label="Weekly pace">' +
+        '<input type="range" id="wi" style="width:100%" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="any" value="' + dsp(v0) + '" data-level="' + A.fc.points[Math.min(A.gap, A.fc.points.length - 1)].straight + '" data-goal="' + A.goalKg + '" data-last="' + A.todayN + '" aria-label="Weekly pace">' +
         '<div class="lead num" id="wi-out" style="margin:4px 0 0"></div></div>';
     }
     f += '</div>';
@@ -804,8 +832,9 @@
       var b = A.backtest, better = b.maeNaive > 0 ? 1 - b.maeModel / b.maeNaive : 0;
       rel += '<div class="lead num">Past ' + b.h + ' day forecasts were off by ' + dsp(b.maeModel).toFixed(2) + ' ' + u + ' on average</div>' +
         '<div class="sub">I replayed your history: at each point, forecast ' + b.h + ' days ahead, then compared with what happened (' + b.n + ' tests). Guessing "no change" would have been off by ' + dsp(b.maeNaive).toFixed(2) + ' ' + u + (better > 0.03 ? ', so the model is ' + Math.round(better * 100) + '% closer.' : '. The model is not clearly better than that yet.') + '</div>' +
-        (A.calib > 1.02 ? '<div class="sub" style="margin-top:6px">Your past forecasts were a bit too confident, so ranges are widened by ' + Math.round((A.calib - 1) * 100) + '%.</div>' : '') +
-        (Math.abs(b.bias) > 0.15 ? '<div class="sub" style="margin-top:6px">Forecasts have tended to run ' + dsp(Math.abs(b.bias)).toFixed(2) + ' ' + u + (b.bias > 0 ? ' too high' : ' too low') + '.</div>' : '');
+        (Math.abs(A.calib - 1) > 0.03 ? '<div class="sub" style="margin-top:6px">Ranges are ' + (A.calib > 1 ? 'widened' : 'narrowed') + ' by ' + Math.round(Math.abs(A.calib - 1) * 100) + '% because past forecasts were ' + (A.calib > 1 ? 'too confident' : 'more careful than needed') + '.</div>' : '') +
+        '<div class="sub" style="margin-top:6px">Those ' + b.n + ' tests overlap, so they count as only about ' + Math.max(1, Math.round(b.neff || 1)) + ' independent checks. The 80% range covered ' + Math.round(b.cover80 * 100) + '% of them before adjusting. Treat this as a rough guide until you have more history.</div>' +
+        (Math.abs(b.bias) > 0.15 ? '<div class="sub" style="margin-top:6px">Forecasts have tended to run ' + dsp(Math.abs(b.bias)).toFixed(2) + ' ' + u + (b.bias > 0 ? ' too low' : ' too high') + '.</div>' : '');
     } else rel += '<div class="sub">Needs about 3 weeks of readings to test itself against your history.</div>';
     rel += '</div>';
     cards += rel;
@@ -1054,7 +1083,14 @@
     var tag = (e.target.tagName || '').toLowerCase();
     if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'select' && tag !== 'textarea' && !$('#scrim')) { e.preventDefault(); openLog(); }
   });
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) { analyze(); render(); doSync(); } });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { pull(); analyze(); render(); doSync(); } });
+  window.addEventListener('storage', function (e) {
+    if (e.key !== KEY || !pull()) return;
+    analyze();
+    var ae = document.activeElement;
+    if (ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName) && $('#view').contains(ae)) return; // do not wipe a half-typed form
+    render();
+  });
 
   function init() {
     ['import', 'restore'].forEach(function (k) {

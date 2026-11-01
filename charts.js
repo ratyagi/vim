@@ -68,6 +68,10 @@
     if (o.fc) {
       s.push('<polygon points="' + pts(o.fc.hi, x, y).concat(pts(o.fc.lo.slice().reverse(), x, y)).join(' ') + '" fill="'+TH.b+'" fill-opacity=".12"/>');
     }
+    if (o.today != null && o.today > o.n0 && o.today <= o.n1) {
+      s.push('<line x1="' + f1(x(o.today)) + '" x2="' + f1(x(o.today)) + '" y1="' + padT + '" y2="' + (padT + ph) + '" stroke="#fff" stroke-opacity=".35" stroke-dasharray="2 4"/>');
+      s.push('<text x="' + f1(x(o.today) + 4) + '" y="' + (padT + 11) + '" style="fill:#fff;fill-opacity:.7">Today</text>');
+    }
     if (o.goal != null && y(o.goal) >= padT && y(o.goal) <= padT + ph) {
       s.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + f1(y(o.goal)) + '" y2="' + f1(y(o.goal)) + '" stroke="#fff" stroke-opacity=".5" stroke-dasharray="4 4"/>');
       s.push('<text x="' + (padL + 2) + '" y="' + f1(y(o.goal) - 5) + '" style="fill:#fff;fill-opacity:.75">Goal</text>');

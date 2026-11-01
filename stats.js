@@ -62,6 +62,7 @@
     var N = series.length, first = series[0], last = series[N - 1], i;
     A.first = first; A.last = last; A.startKg = entries[0].kg; A.latestKg = entries[entries.length - 1].kg;
     A.daysSinceLast = A.todayN - last.n;
+    A.gap = Math.max(0, A.daysSinceLast); A.stale = A.gap > 30; // blind for over a month: a forecast would be a guess
     A.realCount = entries.length; A.estCount = N - entries.length; A.spanDays = N;
     A.thin = entries.length < 7;
 
@@ -101,10 +102,13 @@
     // ---- goal and pace target
     var goal = cfg.goalKg || null, maintain = cfg.mode === 'maintain' && !!goal;
     A.goalKg = goal; A.maintain = maintain;
-    A.reached = !!goal && A.currentKg <= goal;
+    // a lose goal must sit below where you started; otherwise there is nothing to "reach"
+    A.goalAbove = !!goal && !maintain && Math.max(A.startKg, A.firstRawKg) <= goal;
+    A.reached = !!goal && !A.goalAbove && A.currentKg <= goal;
     if (goal && A.startKg > goal) A.goalProgress = Math.max(0, Math.min(1, (A.startKg - A.currentKg) / (A.startKg - goal)));
     else if (!goal) { A.goalProgress = Math.max(0, Math.min(1, A.lostKg / (A.startKg * 0.05))); A.goalIsDefault = true; }
     else A.goalProgress = 1;
+    if (A.goalAbove) A.goalProgress = 0;
     A.paceTarget = { kgPerWeek: 0.005 * A.currentKg, source: 'default' };
     if (goal && cfg.goalDate && A.currentKg > goal) {
       var wks = (dayNum(cfg.goalDate) - A.todayN) / 7;
@@ -118,23 +122,30 @@
     if (m && entries.length >= 21) {
       if (cache.bt === undefined) cache.bt = Model.backtest(series.slice(off).map(function (p) { return p.raw; }), 7);
       A.backtest = cache.bt;
-      if (A.backtest && A.backtest.n >= 12) A.calib = Math.max(1, Math.min(1.6, A.backtest.k80 / Z80));
+      if (A.backtest && A.backtest.n >= 12) {
+        // Test points overlap (each looks h days ahead from consecutive days), so they carry about n/h
+        // independent checks. Move toward what the tests say in proportion to that, in either direction.
+        var neff = A.backtest.n / A.backtest.h, w = neff / (neff + 8), raw = Math.max(0.2, A.backtest.k80 / Z80);
+        A.backtest.neff = neff;
+        A.calib = Math.max(0.75, Math.min(2, Math.exp(w * Math.log(raw))));
+        A.calibRaw = raw;
+      }
     }
 
     // ---- forecast + goal probabilities (simulation)
-    if (m) {
+    if (m && !A.stale) {
       A.fc = { points: Model.forecast(m, HORIZON), level: m.last.mu, slope: m.last.b };
       A.fc.points.forEach(function (q) { q.sdTc = q.sdT * A.calib; q.sdRc = q.sdR * A.calib; });
-      if (goal && !maintain && A.currentKg > goal) {
+      if (goal && !maintain && !A.goalAbove && A.currentKg > goal) {
         var key = sig + '|' + goal + '|' + A.calib.toFixed(3);
         if (simCache.key !== key) simCache = { key: key, sim: Model.simulate(m, goal, HORIZON, 2000, 7, A.calib) };
         var sim = simCache.sim, dh = null, h;
         for (h = 0; h <= HORIZON; h++) if (A.fc.points[h].straight <= goal) { dh = h; break; }
-        var at = function (k) { return k === null ? null : dayStr(last.n + k); };
-        A.eta = { reached: false, median: at(sim.p50), early: at(sim.p10), late: at(sim.p90), firstReading: at(sim.r50), straight: at(dh), sim: sim };
+        var at = function (k) { return k === null ? null : dayStr(Math.max(A.todayN, last.n + k)); };
+        A.eta = { reached: false, maybeNow: sim.cumTrend[Math.min(A.gap, sim.H)], median: at(sim.p50), early: at(sim.p10), late: at(sim.p90), firstReading: at(sim.r50), straight: at(dh), sim: sim };
         A.pBy = function (dateStr) { var o = dayNum(dateStr) - last.n; return o < 0 ? 0 : sim.cumTrend[Math.min(o, sim.H)]; };
         if (cfg.goalDate && dayNum(cfg.goalDate) > A.todayN) A.targetProb = A.pBy(cfg.goalDate);
-      } else if (goal && !maintain) A.eta = { reached: true };
+      } else if (goal && !maintain && !A.goalAbove) A.eta = { reached: true };
     }
 
     // ---- BMI

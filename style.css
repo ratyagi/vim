@@ -58,7 +58,7 @@ input, select { font: inherit; color: var(--text); }
 .tab.fab:active { transform: scale(.94); }
 
 /* tablet and desktop: a rounded window floating on a soft backdrop, sidebar on the left */
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 560px) {
   body {
     min-height: 100vh; min-height: 100dvh; padding: 24px; display: grid; place-items: center;
     background: radial-gradient(900px 520px at 12% -8%, var(--glow1), transparent 60%), radial-gradient(900px 560px at 108% 110%, var(--glow2), transparent 60%), radial-gradient(700px 500px at 60% 120%, var(--glow3), transparent 60%), var(--page);
@@ -212,7 +212,7 @@ button.li:hover { background: rgba(255,255,255,.04); }
 .sheet { width: 100%; max-width: 560px; background: var(--card); border-radius: 28px 28px 0 0; padding: 14px 20px calc(22px + var(--safe-b)); animation: up .28s cubic-bezier(.2,.8,.2,1); max-height: 92vh; overflow: auto; }
 .sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 0 auto 14px; }
 .sheet h2 { margin: 0 0 14px; font-size: 22px; font-weight: 800; }
-@media (min-width: 760px) {
+@media (min-width: 760px) and (min-height: 560px) {
   .scrim { align-items: center; padding: 24px; }
   .sheet { max-width: 460px; border-radius: 28px; padding: 22px 24px 24px; border: 1px solid rgba(255,255,255,.08); box-shadow: 0 30px 80px rgba(0,0,0,.6); }
   .sheet .grab { display: none; }
@@ -228,7 +228,7 @@ button.li:hover { background: rgba(255,255,255,.04); }
 #toast { position: fixed; left: 50%; bottom: calc(96px + var(--safe-b)); transform: translate(-50%, 20px); background: var(--card3); color: var(--text); padding: 11px 18px; border-radius: 999px; font-weight: 600; font-size: 14px; opacity: 0; pointer-events: none; transition: .25s; z-index: 60; max-width: 92vw; display: flex; align-items: center; gap: 14px; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 #toast button { color: var(--accent); font-weight: 800; padding: 4px 2px; }
-@media (min-width: 760px) { #toast { bottom: 40px; } }
+@media (min-width: 760px) and (min-height: 560px) { #toast { bottom: 40px; } }
 @keyframes fade { from { opacity: 0 } }
 @keyframes up { from { transform: translateY(40px); opacity: 0 } }
 
@@ -279,3 +279,15 @@ html.sheet-open #content { overflow: hidden; }
 .legend i.dot2 { width: 14px; height: 4px; border-radius: 2px; background: radial-gradient(circle, currentColor 1.2px, transparent 1.6px) 0 50% / 5px 4px repeat-x; }
 button.li { min-height: 52px; }
 #imp-prev { margin: 10px 0 0; } #imp-prev .li { min-height: 40px; padding: 8px 16px; }
+
+/* phone held sideways: wide but short, so keep the phone layout and shrink the chrome */
+@media (max-height: 559px) {
+  #nav { padding: 4px 6px calc(4px + var(--safe-b)); }
+  .tab { min-height: 40px; flex-direction: row; gap: 8px; font-size: 13px; }
+  .tab svg { width: 22px; height: 22px; }
+  .tab.fab { width: 46px; height: 46px; min-height: 46px; margin: -16px 6px 0; }
+  #view { padding-bottom: calc(84px + var(--safe-b)); max-width: 900px; margin: 0 auto; }
+  .sheet { max-height: 100vh; max-height: 100dvh; border-radius: 20px 20px 0 0; }
+  #toast { bottom: calc(66px + var(--safe-b)); }
+  .bigin { font-size: 30px; padding: 8px 10px; } .step { width: 44px; height: 44px; }
+}
