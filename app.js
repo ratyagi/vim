@@ -5,10 +5,11 @@
   var S = window.Stats, C = window.Charts;
   var LB = 2.2046226218, DAY = 86400000;
   var KEY = 'wt.v1', SKEY = 'wt.sync';
-  var DEFAULTS = { unit: 'kg', heightCm: null, age: null, sex: '', activity: 1.375, goalKg: null, goalDate: '', bmiScale: 'who' };
+  var DEFAULTS = { unit: 'kg', hunit: 'cm', heightCm: null, goalKg: null, goalDate: '', mode: 'lose', bandKg: 1, bmiScale: 'who' };
   var DEMO = location.hash === '#demo';
 
   function $(s, el) { return (el || document).querySelector(s); }
+  function $$(s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); }
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
   /* ---------------------------------------------------------------- store */
@@ -40,12 +41,11 @@
     var today = S.dayNum(S.localToday()), entries = {};
     for (var i = 0; i < 62; i++) {
       var n = today - 62 + i, d = S.dayStr(n);
-      var gap = (i >= 12 && i <= 14) || (i >= 22 && i <= 25);
-      if (gap) continue;
+      if ((i >= 12 && i <= 14) || (i >= 22 && i <= 25)) continue;
       var w = 70 + 12 * Math.exp(-i / 48) + (S.dow(n) === 1 ? 0.45 : 0) + (rnd() - 0.5) * 0.8;
       entries[d] = { kg: +w.toFixed(1), t: 1 };
     }
-    return { entries: entries, settings: Object.assign({}, DEFAULTS, { heightCm: 168, age: 30, goalKg: 68, goalDate: S.dayStr(today + 60) }), st: 1 };
+    return { entries: entries, settings: Object.assign({}, DEFAULTS, { heightCm: 168, goalKg: 68, goalDate: S.dayStr(today + 60) }), st: 1 };
   }
 
   function live() {
@@ -54,7 +54,7 @@
   }
   function cfg() {
     var s = state.settings;
-    return { heightCm: s.heightCm, age: s.age, sex: s.sex, activity: s.activity, goalKg: s.goalKg, goalDate: s.goalDate, bmiScale: s.bmiScale };
+    return { heightCm: s.heightCm, goalKg: s.goalKg, goalDate: s.goalDate, bmiScale: s.bmiScale, mode: s.mode, bandKg: s.bandKg };
   }
   function analyze() { lastA = S.analyze(live(), cfg(), S.localToday()); return lastA; }
 
@@ -68,67 +68,124 @@
     return new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: year ? 'numeric' : undefined, timeZone: 'UTC' });
   }
   function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  // Accepts 72, 72.4, 72,4 and ".5". Returns NaN for anything else.
+  function parseNum(s) {
+    s = String(s === null || s === undefined ? '' : s).trim().replace(',', '.');
+    return /^-?(\d+\.?\d*|\.\d+)$/.test(s) ? parseFloat(s) : NaN;
+  }
+  function num(n, d) { return +n.toFixed(d === undefined ? 2 : d); }
 
   /* ---------------------------------------------------------------- toast + sheets */
-  var toastT;
-  function toast(msg) {
-    var t = $('#toast'); t.textContent = msg; t.classList.add('show');
-    clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); }, 2800);
+  var toastT, toastFn = null;
+  function toast(msg, label, fn) {
+    var t = $('#toast'); t.textContent = msg; toastFn = null;
+    if (label && fn) {
+      var b = document.createElement('button'); b.textContent = label; b.setAttribute('data-toast', '1'); t.appendChild(b); toastFn = fn;
+    }
+    t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); toastFn = null; }, label ? 6000 : 2800);
   }
+  var lastFocus = null;
   function openSheet(html, mount) {
-    closeSheet();
+    closeSheet(); lastFocus = document.activeElement;
     var el = document.createElement('div'); el.className = 'scrim'; el.id = 'scrim';
     el.innerHTML = '<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>' + html + '</div>';
     el.addEventListener('click', function (e) { if (e.target === el) closeSheet(); });
     document.body.appendChild(el);
     if (mount) mount(el);
   }
-  function closeSheet() { var s = $('#scrim'); if (s) s.remove(); }
+  function closeSheet() {
+    var s = $('#scrim'); if (s) s.remove();
+    if (lastFocus && lastFocus.focus) { try { lastFocus.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+    lastFocus = null;
+  }
 
   /* ---------------------------------------------------------------- logging */
-  function openLog(date, kg) {
+  function entryKg(date) { var e = state.entries[date]; return e && !e.del ? e.kg : null; }
+  function openLog(date) {
     var today = S.localToday(); date = date || today;
-    var existing = kg !== undefined ? kg : (state.entries[date] && !state.entries[date].del ? state.entries[date].kg : null);
+    var A = lastA || analyze(), hasData = A.series && A.series.length;
+    var existing = entryKg(date);
+    var start = existing !== null ? existing : (hasData ? A.latestKg : null);
     openSheet(
-      '<h2>' + (existing !== null ? 'Update weight' : 'Log weight') + '</h2>' +
-      '<input id="lw" class="bigin num" type="number" step="0.1" inputmode="decimal" placeholder="0.0" value="' + (existing !== null ? fw(existing, 1) : '') + '" aria-label="Weight in ' + unit() + '">' +
-      '<div class="sub" style="text-align:center;margin-top:6px">' + unit() + '</div>' +
-      '<input id="ld" class="datein" type="date" value="' + date + '" max="' + today + '" aria-label="Date">' +
+      '<h2 id="lt">' + (existing !== null ? 'Update weight' : 'Log weight') + '</h2>' +
+      '<div class="stepper"><button class="step" id="lm" aria-label="Down 0.1">−</button>' +
+      '<input id="lw" class="bigin num" type="text" inputmode="decimal" autocomplete="off" placeholder="0.0" value="' + (start !== null ? fw(start, 1) : '') + '" aria-label="Weight in ' + unit() + '">' +
+      '<button class="step" id="lp" aria-label="Up 0.1">+</button></div>' +
+      '<div class="sub center" style="margin-top:8px" id="ld-hint">' + unit() + '</div>' +
+      '<div class="chips-row"><button class="chip" id="d-today">Today</button><button class="chip" id="d-yest">Yesterday</button>' +
+      '<input id="ld" class="datein" type="date" value="' + date + '" max="' + today + '" aria-label="Date"></div>' +
+      '<div class="ferr hide" id="lerr"></div>' +
       '<button class="btn primary block" id="lsave">Save</button>',
       function (el) {
-        var w = $('#lw', el); w.focus(); w.select();
-        var go = function () {
-          var d = $('#ld', el).value;
-          if (saveEntry(d, w.value)) closeSheet();
-        };
-        $('#lsave', el).addEventListener('click', go);
-        w.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+        var w = $('#lw', el), d = $('#ld', el), hint = $('#ld-hint', el), err = $('#lerr', el), btn = $('#lsave', el), title = $('#lt', el);
+        w.focus(); w.select();
+        function refresh() {
+          var dv = d.value, ex = entryKg(dv), v = parseNum(w.value);
+          btn.textContent = ex !== null ? 'Update' : 'Save'; title.textContent = ex !== null ? 'Update weight' : 'Log weight';
+          var txt = unit();
+          if (isFinite(v) && hasData) {
+            var diff = v - dsp(A.latestKg);
+            txt += ' · ' + sgn(diff) + ' vs last reading';
+          }
+          if (ex !== null) txt += ' · replaces ' + fw(ex, 1);
+          hint.textContent = txt;
+          $('#d-today', el).classList.toggle('on', dv === today);
+          $('#d-yest', el).classList.toggle('on', dv === S.dayStr(S.dayNum(today) - 1));
+        }
+        function bump(delta) {
+          var v = parseNum(w.value); if (!isFinite(v)) v = start !== null ? dsp(start) : 70;
+          w.value = (Math.round((v + delta) * 10) / 10).toFixed(1); refresh();
+        }
+        $('#lm', el).addEventListener('click', function () { bump(-0.1); });
+        $('#lp', el).addEventListener('click', function () { bump(0.1); });
+        $('#d-today', el).addEventListener('click', function () { d.value = today; refresh(); });
+        $('#d-yest', el).addEventListener('click', function () { d.value = S.dayStr(S.dayNum(today) - 1); refresh(); });
+        w.addEventListener('input', refresh); d.addEventListener('change', refresh);
+        w.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') go();
+          else if (e.key === 'ArrowUp') { e.preventDefault(); bump(0.1); }
+          else if (e.key === 'ArrowDown') { e.preventDefault(); bump(-0.1); }
+        });
+        function go() {
+          var msg = validateEntry(d.value, w.value);
+          if (msg) { err.textContent = msg; err.classList.remove('hide'); return; }
+          saveEntry(d.value, w.value); closeSheet();
+        }
+        btn.addEventListener('click', go);
+        refresh();
       });
   }
-  function saveEntry(date, raw) {
-    var v = parseFloat(String(raw).replace(',', '.'));
-    if (!isFinite(v)) { toast('Enter a number'); return false; }
+  function validateEntry(date, raw) {
+    var v = parseNum(raw);
+    if (!isFinite(v)) return 'Enter a number, like 72.4';
     var kg = fromDsp(v);
-    if (kg < 25 || kg > 400) { toast('That looks off. Check the number and unit.'); return false; }
-    if (!date || date > S.localToday()) { toast('Pick today or an earlier date'); return false; }
-    var before = lastA || analyze();
-    var earned = {}; (before.awards || []).forEach(function (a) { if (a.earned) earned[a.id] = 1; });
-    var prevLow = before.lowestTrend;
+    if (kg < 25 || kg > 400) return 'That looks off. Check the number and the unit (' + unit() + ').';
+    if (!date) return 'Pick a date';
+    if (date > S.localToday()) return 'Pick today or an earlier date';
+    return '';
+  }
+  function saveEntry(date, raw) {
+    var kg = fromDsp(parseNum(raw)), prev = state.entries[date] ? Object.assign({}, state.entries[date]) : null;
+    var before = lastA || analyze(), prevTrend = before.series && before.series.length ? before.currentKg : null;
     state.entries[date] = { kg: +kg.toFixed(4), t: Date.now() };
     persist(); var A = analyze(); render();
     var msg = 'Saved.';
     if (A.streak.current > 1 && date >= S.dayStr(A.todayN - 1)) msg = 'Saved. ' + A.streak.current + ' day streak.';
-    var fresh = (A.awards || []).filter(function (a) { return a.earned && !earned[a.id]; });
-    if (fresh.length) msg = fresh[0].icon + ' New award: ' + fresh[0].title;
-    else if (A.series.length > 7 && A.currentKg < prevLow - 1e-6) msg = 'Saved. New lowest trend weight.';
-    toast(msg);
+    if (A.reached && !(before.reached) && !A.maintain && A.goalKg) msg = 'Saved. Your trend is at your goal.';
+    else if (prevTrend !== null && A.hasModel && A.currentKg < Math.min.apply(null, A.series.slice(0, -1).map(function (p) { return p.trend; })) - 1e-6) msg = 'Saved. New lowest trend weight.';
+    toast(msg, 'Undo', function () {
+      state.entries[date] = prev ? { kg: prev.kg, t: Date.now(), del: !!prev.del } : { kg: kg, t: Date.now(), del: true };
+      persist(); analyze(); render();
+    });
     if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* ignore */ } }
-    return true;
   }
   function deleteEntry(date) {
-    if (!state.entries[date]) return;
-    state.entries[date] = { kg: state.entries[date].kg, t: Date.now(), del: true };
-    persist(); analyze(); render(); toast('Deleted ' + fdate(date));
+    var cur = state.entries[date]; if (!cur) return;
+    var old = { kg: cur.kg, t: cur.t };
+    state.entries[date] = { kg: cur.kg, t: Date.now(), del: true };
+    persist(); analyze(); render();
+    toast('Deleted ' + fdate(date), 'Undo', function () { state.entries[date] = { kg: old.kg, t: Date.now() }; persist(); analyze(); render(); });
   }
 
   /* ---------------------------------------------------------------- import / export */
@@ -247,7 +304,7 @@
       '<div class="li"><span>Typical value</span><span class="r num">' + p.median.toFixed(1) + '</span></div>' +
       '<div class="li"><label for="iu">Values are in</label><select id="iu"><option value="kg"' + (u === 'kg' ? ' selected' : '') + '>kg</option><option value="lb"' + (u === 'lb' ? ' selected' : '') + '>lb</option></select></div>' +
       '<div class="li"><label for="im">Existing readings</label><select id="im"><option value="merge">Keep, update same dates</option><option value="replace">Replace everything</option></select></div></div>' +
-      '<div class="note">' + esc(p.info) + (p.skipped ? ' ' + plural(p.skipped, 'row') + ' skipped (empty or not readable).' : '') + (guessLb ? ' Values look like lb, so I picked lb.' : '') + '</div>' +
+      '<div class="note">' + esc(p.info) + (p.skipped ? ' ' + plural(p.skipped, 'row') + ' skipped (not readable).' : '') + (guessLb ? ' Values look like lb, so lb is selected.' : '') + '</div>' +
       '<button class="btn primary block" id="idoit">Import</button>',
       function (el) {
         $('#idoit', el).addEventListener('click', function () {
@@ -308,7 +365,19 @@
   /* ---------------------------------------------------------------- GitHub sync (private repo) */
   var syncing = false, again = false, syncTimer;
   function scheduleSync() { if (DEMO || !sync.on) return; clearTimeout(syncTimer); syncTimer = setTimeout(function () { doSync(); }, 2000); }
-  function setStatus(msg, cls) { ui.msg = msg; ui.cls = cls || ''; var el = $('#sync-status'); if (el) { el.textContent = msg; el.className = 'status ' + (cls || ''); } }
+  function setStatus(msg, cls) {
+    ui.msg = msg; ui.cls = cls || '';
+    var el = $('#sync-status'); if (el) { el.textContent = msg; el.className = 'status ' + (cls || ''); }
+    updateChip();
+  }
+  function updateChip() {
+    $$('.sync-chip').forEach(function (c) {
+      var busy = syncing, bad = ui.cls === 'bad';
+      c.className = 'sync-chip' + (busy ? ' busy' : bad ? ' bad' : sync.on ? ' ok' : '');
+      c.lastChild.textContent = busy ? 'Syncing' : bad ? 'Sync problem' : sync.on ? 'Synced' : 'This device only';
+    });
+  }
+  function chipHtml() { return '<button class="sync-chip" data-tab="settings" aria-label="Sync status"><i></i><span>This device only</span></button>'; }
   function canon(s) {
     var sk = Object.keys(s.settings || {}).sort().map(function (k) { return [k, s.settings[k]]; });
     return JSON.stringify({ e: Object.keys(s.entries).sort().map(function (k) { var v = s.entries[k]; return [k, v.kg, v.t, !!v.del]; }), st: s.st || 0, s: sk });
@@ -355,74 +424,100 @@
         if (code === 409 && attempt++ < 2) return step();
         if (code === 409) throw new Error('Sync conflict, try again');
         sync.last = Date.now(); saveSync();
+        syncing = false;
         setStatus('Synced at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 'ok');
       });
     };
-    return step().catch(function (e) { setStatus('Sync failed: ' + (e.message || e), 'bad'); })
-      .then(function () { syncing = false; if (again) { again = false; scheduleSync(); } });
+    return step().catch(function (e) { syncing = false; setStatus('Sync failed: ' + (e.message || e), 'bad'); })
+      .then(function () { syncing = false; updateChip(); if (again) { again = false; scheduleSync(); } });
   }
 
-  /* ---------------------------------------------------------------- settings */
-  function setSetting(key, val) {
-    var s = state.settings, n;
-    if (key === 'unit') s.unit = val;
-    else if (key === 'sex') s.sex = val;
-    else if (key === 'bmiScale') s.bmiScale = val;
-    else if (key === 'activity') s.activity = +val;
-    else if (key === 'goalDate') s.goalDate = val || '';
-    else if (key === 'heightCm') { n = parseFloat(val); s.heightCm = n >= 100 && n <= 230 ? +n.toFixed(1) : null; if (val && !s.heightCm) toast('Height should be 100 to 230 cm'); }
-    else if (key === 'height-imp') {
-      var ft = parseFloat($('#h-ft').value) || 0, inch = parseFloat($('#h-in').value) || 0, cm = (ft * 12 + inch) * 2.54;
-      s.heightCm = cm >= 100 && cm <= 230 ? +cm.toFixed(1) : null; if ((ft || inch) && !s.heightCm) toast('Height looks off');
-    }
-    else if (key === 'age') { n = parseInt(val, 10); s.age = n >= 10 && n <= 110 ? n : null; if (val && !s.age) toast('Age should be 10 to 110'); }
-    else if (key === 'goal') {
-      n = parseFloat(val); var kg = fromDsp(n);
-      s.goalKg = isFinite(kg) && kg >= 25 && kg <= 400 ? +kg.toFixed(3) : null; if (val && !s.goalKg) toast('Goal weight looks off');
-    }
-    state.st = Date.now(); persist(); analyze();
-    // Only re-draw for unit changes. Re-drawing on every field would steal focus
-    // when you tap from one field to the next. Other screens refresh when you switch tabs.
-    if (key === 'unit') render();
-  }
+  /* ---------------------------------------------------------------- charts */
+  var builders = {};
+  function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 
-  /* ---------------------------------------------------------------- chart assembly */
-  function chartFor(A, id, H) {
-    var ser = A.series, last = A.last;
-    var days = ui.range === 'all' ? ser.length : parseInt(ui.range, 10);
-    var h = 60;
-    if (ui.fc && A.fc) {
-      if (A.eta && A.eta.centralDays !== null && !A.eta.reached) h = Math.min(180, Math.max(21, Math.ceil(A.eta.centralDays * 1.25) + 7));
-      days = Math.max(days, Math.round(h * 0.8)); // keep history readable next to a long forecast
-    }
-    var n0 = Math.max(ser[0].n, last.n - days + 1), n1 = last.n;
-    var vis = ser.filter(function (p) { return p.n >= n0; });
-    var fc = null, fpts = null;
-    if (ui.fc && A.fc) {
-      fpts = A.fc.points.filter(function (p) { return p.h <= h; });
-      fc = {
-        mid: fpts.map(function (p) { return { n: p.n, v: dsp(p.mid) }; }), lo: fpts.map(function (p) { return { n: p.n, v: dsp(p.lo) }; }),
-        hi: fpts.map(function (p) { return { n: p.n, v: dsp(p.hi) }; }), damped: fpts.map(function (p) { return { n: p.n, v: dsp(p.damped) }; })
-      };
-      n1 = last.n + h;
-    }
-    var byN = {}; ser.forEach(function (p) { byN[p.n] = p; });
-    var readout = function (n) {
-      if (n === null) return '<b class="num">' + fw(last.trend) + '</b>' + unit() + ' trend<br><span>Drag across the chart for any day</span>';
-      if (n <= last.n && byN[n]) {
-        var p = byN[n];
-        return '<b class="num">' + fw(p.trend) + '</b>' + unit() + ' trend<br><span>' + fdate(p.d) + (p.raw !== null ? ' &middot; reading ' + fw(p.raw) : ' &middot; no reading (estimated)') + '</span>';
+  function fcHorizon(A) {
+    if (!ui.fc || !A.fc) return 0;
+    if (A.maintain) return 28;
+    if (A.eta && A.eta.median) return clamp(S.dayNum(A.eta.late || A.eta.median) - A.last.n + 7, 21, 180);
+    return 30;
+  }
+  function weightChart(id, H, opts) {
+    opts = opts || {};
+    return function (W) {
+      var A = lastA, ser = A.series, last = A.last, h = fcHorizon(A);
+      var days = ui.range === 'all' ? ser.length : parseInt(ui.range, 10);
+      if (h) days = Math.max(days, Math.round(h * 0.8)); // keep history readable next to a long forecast
+      var n0 = Math.max(ser[0].n, last.n - days + 1), n1 = last.n;
+      var vis = ser.filter(function (p) { return p.n >= n0; });
+      var fc = null, fpts = null, k = A.calib || 1, z = A.Z80;
+      if (h) {
+        fpts = A.fc.points.filter(function (p) { return p.h <= h; });
+        var mk = function (f) { return fpts.map(function (p) { return { n: last.n + p.h, v: dsp(f(p)) }; }); };
+        fc = { mid: mk(function (p) { return p.mean; }), lo: mk(function (p) { return p.mean - z * p.sdRc; }), hi: mk(function (p) { return p.mean + z * p.sdRc; }),
+          straight: A.maintain ? null : mk(function (p) { return p.straight; }) };
+        n1 = last.n + h;
       }
-      var f = fpts && fpts[n - last.n];
-      return f ? '<b class="num">' + fw(f.mid) + '</b>' + unit() + ' forecast<br><span>' + fdate(S.dayStr(n)) + ' &middot; likely range ' + fw(f.lo) + ' to ' + fw(f.hi) + '</span>' : '';
+      var byN = {}; ser.forEach(function (p) { byN[p.n] = p; });
+      var u = unit();
+      var readout = function (n) {
+        if (n === null) return '<b class="num">' + fw(last.trend) + '</b>' + u + ' trend<br><span>Drag across the chart for any day</span>';
+        if (n <= last.n && byN[n]) {
+          var p = byN[n];
+          return '<b class="num">' + fw(p.trend) + '</b>' + u + ' trend<br><span>' + fdate(p.d) + (p.raw !== null ? ' &middot; reading ' + fw(p.raw) : ' &middot; no reading (estimated)') + '</span>';
+        }
+        var f = fpts && fpts[n - last.n];
+        return f ? '<b class="num">' + fw(f.mean) + '</b>' + u + ' forecast<br><span>' + fdate(S.dayStr(n)) + ' &middot; likely ' + fw(f.mean - z * f.sdRc) + ' to ' + fw(f.mean + z * f.sdRc) + '</span>' : '';
+      };
+      var withBand = vis.filter(function (p) { return p.lo !== undefined; });
+      var refs = [];
+      if (opts.bmi && A.bmiRefs) {
+        var sc = S.SCALES[state.settings.bmiScale] || S.SCALES.who;
+        A.bmiRefs.forEach(function (r) { refs.push({ v: dsp(r.kg), label: 'BMI ' + r.cut }); });
+        void sc;
+      }
+      return '<div class="readout num" id="ro-' + id + '">' + readout(null) + '</div>' + C.lineChart({
+        id: id, W: W, H: H, n0: n0, n1: n1, readout: readout, goal: A.goalKg ? dsp(A.goalKg) : null, fc: fc, refs: refs,
+        band: withBand.length > 1 ? { lo: withBand.map(function (p) { return { n: p.n, v: dsp(p.lo) }; }), hi: withBand.map(function (p) { return { n: p.n, v: dsp(p.hi) }; }) } : null,
+        label: 'Weight over time. Latest trend ' + fw(last.trend) + ' ' + u,
+        trend: vis.map(function (p) { return { n: p.n, v: dsp(p.trend) }; }),
+        raw: vis.map(function (p) { return { n: p.n, v: dsp(p.w), est: p.est, out: p.out }; })
+      });
     };
-    return '<div class="readout num" id="ro-' + id + '">' + readout(null) + '</div>' + C.lineChart({
-      id: id, H: H, n0: n0, n1: n1, readout: readout, goal: A.goalKg ? dsp(A.goalKg) : null, fc: fc,
-      label: 'Weight over time. Latest trend ' + fw(last.trend) + ' ' + unit(),
-      trend: vis.map(function (p) { return { n: p.n, v: dsp(p.trend) }; }),
-      raw: vis.filter(function (p) { return true; }).map(function (p) { return { n: p.n, v: dsp(p.w), est: p.est }; })
-    });
   }
+  function paceBuilder(H) {
+    return function (W) {
+      var A = lastA, ph = A.paceHist; if (!ph || ph.length < 3) return '';
+      var days = ui.range === 'all' ? ph.length : parseInt(ui.range, 10);
+      var vis = ph.slice(-Math.max(8, days));
+      return C.paceChart({ W: W, H: H, n0: vis[0].n, n1: vis[vis.length - 1].n, target: A.goalKg && !A.maintain ? dsp(A.paceTarget.kgPerWeek) : null,
+        label: 'Weight lost per week over time',
+        pts: vis.map(function (p) { return { n: p.n, v: dsp(p.loss), lo: dsp(p.lo), hi: dsp(p.hi) }; }) });
+    };
+  }
+  function probBuilder(H) {
+    return function (W) {
+      var A = lastA, sim = A.eta && A.eta.sim; if (!sim) return '';
+      var hmax = clamp((A.eta.late ? S.dayNum(A.eta.late) - A.last.n : 120) + 14, 30, sim.H), pts = [], i;
+      for (i = 0; i <= hmax; i++) pts.push({ n: A.last.n + i, p: sim.cumTrend[i] });
+      var marks = [];
+      if (state.settings.goalDate && S.dayNum(state.settings.goalDate) > A.todayN) marks.push({ n: S.dayNum(state.settings.goalDate), label: 'Target', color: '#ff9f0a' });
+      if (A.eta.median) marks.push({ n: S.dayNum(A.eta.median), label: 'Median', color: '#fff' });
+      return C.probChart({ W: W, H: H, n0: A.last.n, n1: A.last.n + hmax, pts: pts, marks: marks });
+    };
+  }
+  function slot(id, builder) { builders[id] = builder; return '<div class="cslot" data-slot="' + id + '"></div>'; }
+  var lastW = 0;
+  function drawCharts() {
+    var v = $('#view'), changed = false;
+    $$('.cslot', v).forEach(function (el) {
+      var b = builders[el.getAttribute('data-slot')], W = Math.floor(el.clientWidth);
+      if (!b || W < 120 || !lastA || !lastA.series || !lastA.series.length) return;
+      el.innerHTML = b(W); changed = true;
+    });
+    if (changed) C.bind(v);
+  }
+
   function rangeControls() {
     var b = function (v, l) { return '<button data-range="' + v + '" class="' + (ui.range === v ? 'on' : '') + '">' + l + '</button>'; };
     return '<div class="toolbar"><div class="seg">' + b('30', '1M') + b('90', '3M') + b('all', 'All') + '</div>' +
@@ -430,252 +525,273 @@
   }
   function legend(A) {
     return '<div class="legend"><span><i style="background:#ff2d55"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
+      '<span><i class="box"></i>Usual scatter</span>' +
       (A.estCount ? '<span><i class="dot" style="border:1px solid #8e8e93"></i>Filled in</span>' : '') +
-      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Same pace</span><span class="cyan"><i class="dash"></i>If it slows</span>' : '') + '</div>';
+      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dash"></i>Same pace</span>') : '') + '</div>';
   }
 
   /* ---------------------------------------------------------------- screens */
   function header(title) {
     var d = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-    return '<div class="head"><div><div class="date">' + d + '</div><h1>' + title + '</h1></div></div>' + (DEMO ? '<div class="warn">Demo data. Nothing here is saved.</div>' : '');
+    return '<div class="head"><div><div class="date">' + d + '</div><h1>' + title + '</h1></div>' + chipHtml() + '</div>' + (DEMO ? '<div class="warn" style="margin-bottom:14px">Demo data. Nothing here is saved.</div>' : '');
   }
-  function emptyState() {
-    return header('Summary') + '<div class="card empty">' + C.rings([{ pct: .0, c1: '#ff2d55', c2: '#ff6b8b' }, { pct: 0, c1: '#a3f408', c2: '#5fe33b' }, { pct: 0, c1: '#2de3f0', c2: '#1fa9ff' }]).replace('<svg ', '<svg class="ring-art" ') +
+  function emptyState(title) {
+    return header(title) + '<div class="card empty">' + C.rings([{ pct: 0, c1: '#ff2d55', c2: '#ff6b8b' }, { pct: 0, c1: '#a3f408', c2: '#5fe33b' }, { pct: 0, c1: '#2de3f0', c2: '#1fa9ff' }]).replace('<svg ', '<svg class="ring-art" ') +
       '<h2>Start your first ring</h2><p class="sub">Import your Excel sheet once, or log today\'s weight.</p>' +
-      '<div class="row-btns" style="justify-content:center"><button class="btn primary" data-action="pick-import">Import Excel or CSV</button><button class="btn" data-action="log">Log a weight</button></div></div>';
+      '<div class="row-btns"><button class="btn primary" data-action="pick-import">Import Excel or CSV</button><button class="btn" data-action="log">Log a weight</button></div></div>';
+  }
+  function etaText(A) {
+    var e = A.eta; if (!e || e.reached || !e.median) return null;
+    var win = e.early ? fdate(e.early) + ' to ' + (e.late ? fdate(e.late) : 'later than 8 months out') : null;
+    return { date: fdate(e.median, true), short: fdate(e.median), win: win };
   }
 
   function viewSummary(A) {
-    if (!A.series || !A.series.length) return emptyState();
-    var u = unit(), st = A.streak;
-    var goalTxt = A.goalKg ? fw(A.lostKg) + ' of ' + fw(A.startKg - A.goalKg) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
-    var rings = C.rings([
-      { pct: A.goalProgress || 0, c1: '#ff2d55', c2: '#ff6b8b' },
-      { pct: st.week / 7, c1: '#a3f408', c2: '#5fe33b' },
-      { pct: A.pacePct || 0, c1: '#2de3f0', c2: '#1fa9ff' }
-    ]);
-    var h = header('Summary');
-    h += '<div class="card"><div class="rings">' + rings + '<div class="rstats">' +
-      '<div class="rstat"><div class="k">' + (A.goalKg ? 'Goal progress' : 'First 5%') + '</div><div class="v red num">' + Math.round((A.goalProgress || 0) * 100) + '<small>%</small></div><div class="n num">' + goalTxt + '</div></div>' +
-      '<div class="rstat"><div class="k">Logged this week</div><div class="v green num">' + st.week + '<small>/7 days</small></div><div class="n">' + (st.aliveToday ? 'Today is in' : 'Today is open') + '</div></div>' +
-      '<div class="rstat"><div class="k">Pace</div><div class="v cyan num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n num">' + (A.rate ? 'target ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) : 'needs 7 readings in 4 weeks') + '</div></div>' +
-      '</div></div></div>';
-    if (A.paceTarget.tooFast && A.paceTarget.source === 'date') h += '<div class="warn">Your target date needs ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) + ' ' + u + ' per week, which is above the 1% of body weight per week that is usually treated as an upper limit. Consider a later date in Data.</div>';
-    if (A.fastPace) h += '<div class="warn">Your current pace is above 1% of body weight per week. Early loss often includes water, but if it stays this fast it is worth mentioning to a doctor or dietitian.</div>';
+    if (!A.series || !A.series.length) return emptyState('Today');
+    var u = unit(), st = A.streak, h = header('Today'), goal = A.goalKg;
 
-    h += '<div class="card"><div class="k sub" style="font-weight:600">Trend weight</div><div class="big num">' + fw(A.currentKg) + '<small>' + u + '</small></div>' +
-      '<div class="chips">' + '<span class="chip num">' + sgn(dsp(-A.lostKg)) + ' ' + u + ' since start</span>' +
+    var r1, r2, r3;
+    if (A.maintain) {
+      r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + A.maint.of + ' days within ±' + fw(A.maint.band) + ' ' + u : '' };
+      r3 = { pct: Math.min(1, st.current / 14), k: 'Logging streak', v: st.current, unitLabel: 'days', n: 'goal: 14' };
+    } else {
+      var gt = goal ? fw(A.lostKg) + ' of ' + fw(A.startKg - goal) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
+      r1 = { pct: A.goalProgress || 0, k: goal ? 'Goal progress' : 'First 5%', v: Math.round((A.goalProgress || 0) * 100), unitLabel: '%', n: gt };
+      r3 = { pct: A.pacePct || 0, k: 'Pace', v: A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--', unitLabel: u + '/wk', n: A.rate ? 'target ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) : 'needs about 10 readings' };
+    }
+    r2 = { pct: st.week / 7, k: 'Logged this week', v: st.week, unitLabel: '/7 days', n: st.today ? 'Today is in' : 'Today is open' };
+    var rings = C.rings([{ pct: r1.pct, c1: '#ff2d55', c2: '#ff6b8b' }, { pct: r2.pct, c1: '#a3f408', c2: '#5fe33b' }, { pct: r3.pct, c1: '#2de3f0', c2: '#1fa9ff' }]);
+    var rs = function (o, cls) { return '<div class="rstat"><div class="k ' + cls + '">' + o.k + '</div><div class="v ' + cls + ' num">' + o.v + '<small>' + o.unitLabel + '</small></div><div class="n num">' + o.n + '</div></div>'; };
+
+    var warns = '';
+    if (A.reached && !A.maintain && goal) {
+      warns += '<div class="card"><h3>You reached your goal</h3><div class="sub">Your trend weight is at or below ' + fw(goal) + ' ' + u + '. Pick what comes next.</div>' +
+        '<div class="row-btns"><button class="btn primary" data-action="to-maintain">Keep it steady</button><button class="btn" data-tab="settings">Set a new goal</button></div></div>';
+    }
+    if (!A.maintain && A.paceTarget.tooFast && A.paceTarget.source === 'date') warns += '<div class="warn" style="margin-bottom:14px">Your target date needs ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) + ' ' + u + ' per week, above the 1% of body weight per week that is usually treated as an upper limit. A later date in Settings is safer.</div>';
+    if (A.fastPace) warns += '<div class="warn" style="margin-bottom:14px">Your pace is above 1% of body weight per week. Early loss often includes water, but if it stays this fast it is worth mentioning to a doctor or dietitian.</div>';
+    if (A.thin) warns += '<div class="info" style="margin-bottom:14px">Trend, pace and forecast switch on after 7 readings. You have ' + A.realCount + '.</div>';
+    if (A.daysSinceLast >= 4) warns += '<div class="info" style="margin-bottom:14px">Last reading was ' + A.daysSinceLast + ' days ago. One reading is enough to get back on track.</div>';
+
+    h += warns;
+    h += '<div class="grid"><div class="card c-5"><div class="rings">' + rings + '<div class="rstats">' + rs(r1, 'red') + rs(r2, 'green') + rs(r3, 'cyan') + '</div></div></div>';
+
+    h += '<div class="card c-7"><div class="sub" style="font-weight:600">Trend weight</div><div class="big num">' + fw(A.currentKg) + '<small>' + u + '</small></div>' +
+      '<div class="chips"><span class="chip num">' + sgn(dsp(-A.lostKg)) + ' ' + u + ' since start</span>' +
       (A.change7 !== null ? '<span class="chip num">' + sgn(dsp(A.change7)) + ' last 7 days</span>' : '') +
       (A.bmi ? '<span class="chip num">BMI ' + A.bmi.value.toFixed(1) + '</span>' : '') + '</div>' +
-      '<div class="sub" style="margin-top:10px">Latest reading ' + fw(A.latestKg) + ' ' + u + ', ' + fdate(A.last.d) + (A.daysSinceLast >= 3 ? ' (' + A.daysSinceLast + ' days ago)' : '') + '</div>' +
-      '<div class="row-btns"><button class="btn primary" data-action="log">' + (st.today ? 'Update today' : 'Log today\'s weight') + '</button></div></div>';
+      '<div class="sub" style="margin-top:10px">Latest reading <b class="num">' + fw(A.latestKg) + ' ' + u + '</b>, ' + fdate(A.last.d) + (A.daysSinceLast >= 3 ? ' (' + A.daysSinceLast + ' days ago)' : '') + '. The trend smooths out daily noise, so it moves slower than the scale.</div>' +
+      '<div class="row-btns"><button class="btn primary" data-action="log">' + (st.today ? 'Update today' : 'Log today\'s weight') + '</button></div></div></div>';
 
-    h += '<div class="card">' + rangeControls() + chartFor(A, 'sum', 220) + legend(A) + '</div>';
+    h += '<div class="card">' + rangeControls() + slot('sum', weightChart('sum', 240)) + legend(A) + '</div>';
 
-    h += '<div class="grid2">';
-    h += '<div class="card tile"><div class="k">Streak</div><div class="v green num">' + st.current + '<small>days</small></div><div class="n">longest ' + st.longest + '</div></div>';
-    h += '<div class="card tile"><div class="k">Lost so far</div><div class="v red num">' + fw(A.lostKg) + '<small>' + u + '</small></div><div class="n num">' + A.lostPct.toFixed(1) + '% of start</div></div>';
-    if (A.bmi) {
-      h += '<div class="card tile"><div class="k">BMI</div><div class="v num">' + A.bmi.value.toFixed(1) + '</div><div class="n">' + A.bmi.label + (A.bmi.next ? '. ' + fw(A.bmi.next.kgToGo) + ' ' + u + ' to ' + A.bmi.next.label : '') + '</div></div>';
+    var t = '';
+    t += '<div class="card tile"><div class="k">Streak</div><div class="v green num">' + st.current + '<small>days</small></div><div class="n">longest ' + st.longest + '</div></div>';
+    if (A.maintain) {
+      t += '<div class="card tile"><div class="k">Goal range</div><div class="v num">' + fw(goal) + '<small>±' + fw(A.maint.band) + '</small></div><div class="n">' + (A.maint.drift !== null ? 'drifting ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + '/wk' : '') + '</div></div>';
     } else {
-      h += '<div class="card tile"><div class="k">BMI</div><div class="v">--</div><div class="n"><button class="chip" data-tab="data">Add height</button></div></div>';
+      t += '<div class="card tile"><div class="k">Lost so far</div><div class="v red num">' + fw(A.lostKg) + '<small>' + u + '</small></div><div class="n num">' + A.lostPct.toFixed(1) + '% of start</div></div>';
     }
-    if (A.eta && A.eta.central && !A.eta.reached) {
-      h += '<div class="card tile"><div class="k">Goal around</div><div class="v cyan">' + fdate(A.eta.central) + '</div><div class="n">' + (A.eta.optimistic && A.eta.pessimistic ? fdate(A.eta.optimistic) + ' to ' + fdate(A.eta.pessimistic) : 'at this pace') + '</div></div>';
-    } else if (A.eta && A.eta.reached) {
-      h += '<div class="card tile"><div class="k">Goal</div><div class="v cyan">Reached</div><div class="n">Trend is at or below goal</div></div>';
-    } else {
-      h += '<div class="card tile"><div class="k">Goal date</div><div class="v">--</div><div class="n">' + (A.goalKg ? 'Pace is flat or rising' : '<button class="chip" data-tab="data">Set a goal</button>') + '</div></div>';
+    if (A.bmi) t += '<div class="card tile"><div class="k">BMI</div><div class="v num">' + A.bmi.value.toFixed(1) + '</div><div class="n">' + A.bmi.label + (A.bmi.next ? '. ' + fw(A.bmi.next.kgToGo) + ' ' + u + ' to ' + A.bmi.next.label : '') + '</div></div>';
+    else t += '<div class="card tile"><div class="k">BMI</div><div class="v">--</div><div class="n"><button class="chip" data-tab="settings">Add height</button></div></div>';
+    var e = etaText(A);
+    if (!A.maintain) {
+      if (e) t += '<div class="card tile"><div class="k">Goal around</div><div class="v cyan">' + e.short + '</div><div class="n">' + (e.win ? 'likely ' + e.win : '') + '</div></div>';
+      else if (A.eta && A.eta.reached) t += '<div class="card tile"><div class="k">Goal</div><div class="v cyan">Reached</div><div class="n">Trend is at or below goal</div></div>';
+      else t += '<div class="card tile"><div class="k">Goal date</div><div class="v">--</div><div class="n">' + (goal ? (A.hasModel ? 'Pace is flat or rising' : 'Needs 7 readings') : '<button class="chip" data-tab="settings">Set a goal</button>') + '</div></div>';
     }
-    h += '</div>';
-
-    var aw = A.awards.filter(function (a) { return a.earned; }).reverse().concat(A.awards.filter(function (a) { return !a.earned; }).slice(0, 4));
-    h += '<div class="h2">Awards</div><div class="awards">' + aw.map(function (a) {
-      return '<div class="award' + (a.earned ? '' : ' off') + '"><div class="b">' + a.icon + '</div><div class="t">' + a.title + '</div>' +
-        '<div class="p">' + (a.earned ? (a.date ? fdate(a.date) : 'Earned') : (a.have !== undefined ? a.have + ' / ' + a.need : '')) + '</div></div>';
-    }).join('') + '</div>';
+    h += '<div class="tiles">' + t + '</div>';
     return h;
   }
 
   function viewTrends(A) {
-    if (!A.series || !A.series.length) return emptyState().replace('Summary', 'Trends');
+    if (!A.series || !A.series.length) return emptyState('Trends');
     var u = unit(), h = header('Trends');
-    h += '<div class="card"><h3>Weight</h3>' + rangeControls() + chartFor(A, 'tr', 260) + legend(A) + '</div>';
-    if (A.weekly.length >= 2) {
-      var data = A.weekly.map(function (w) { return { label: C.dateShort(S.dayNum(w.end)), v: dsp(w.loss) }; });
-      h += '<div class="card"><h3>Weekly change</h3><div class="sub">Lost per week (' + u + '), from the smoothed trend. Dashed line is your target pace.</div>' +
-        C.barsChart({ data: data, target: dsp(A.paceTarget.kgPerWeek), label: 'Weight lost per week' }) + '</div>';
+    h += '<div class="card"><h3>Weight</h3>' + rangeControls() + slot('tr', weightChart('tr', 280, { bmi: true })) + legend(A) +
+      (A.bmi ? '<div class="sub" style="margin-top:8px">Dotted lines are BMI category edges at your height. BMI is a rough screen: it ignores muscle, frame and where weight sits.</div>' : '') + '</div>';
+    if (A.paceHist && A.paceHist.length > 3) {
+      h += '<div class="card"><h3>Pace</h3><div class="sub">Weight lost per week (' + u + '), with the shaded range the data can support. Wide shading means the pace is not pinned down yet.</div>' +
+        slot('pc', paceBuilder(200)) + '</div>';
     }
-    if (A.bmi) {
-      var sc = S.SCALES[state.settings.bmiScale] || S.SCALES.who, hc = state.settings.heightCm;
-      var vis = A.series.filter(function (p) { return true; });
-      h += '<div class="card"><h3>BMI</h3><div class="sub">Trend BMI against category bands. BMI is a rough screen. It ignores muscle, frame and where weight sits.</div>' +
-        C.bmiChart({ points: vis.map(function (p) { return { n: p.n, v: S.bmi(p.trend, hc) }; }), n0: vis[0].n, n1: vis[vis.length - 1].n, cuts: sc.cuts, labels: sc.labels }) + '</div>';
-    } else {
-      h += '<div class="card"><h3>BMI</h3><div class="sub">Add your height in Data to see BMI over time.</div><div class="row-btns"><button class="btn small" data-tab="data">Add height</button></div></div>';
-    }
-    // consistency calendar: last 8 weeks, Monday first
-    var real = {}; A.series.forEach(function (p) { if (p.raw !== null) real[p.n] = 1; });
-    var dowT = (A.todayN + 3) % 7; // Monday = 0
-    var startN = A.todayN - dowT - 49, cells = '';
-    ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (x) { cells += '<div class="dow">' + x + '</div>'; });
-    for (var i = 0; i < 56; i++) {
-      var n = startN + i, cls = 'd' + (real[n] ? ' on' : '') + (n === A.todayN ? ' today' : '') + (n > A.todayN ? ' fut' : '');
-      cells += '<div class="' + cls + '" title="' + fdate(S.dayStr(n)) + '">' + (n > A.todayN ? '' : new Date(n * DAY).getUTCDate()) + '</div>';
-    }
-    h += '<div class="card"><h3>Consistency</h3><div class="sub">Green days have a reading. Last 8 weeks.</div><div class="cal">' + cells + '</div></div>';
+    var ents = live().reverse(), shown = ui.showAll ? ents : ents.slice(0, 14);
+    h += '<div class="h2">Readings (' + ents.length + ')</div><div class="list">' + shown.map(function (x) {
+      return '<div class="li"><button data-action="edit" data-date="' + x.d + '" style="flex:1;text-align:left;min-height:32px">' + fdate(x.d, true) + '</button><span class="r num">' + fw(x.kg) + ' ' + u + '</span>' +
+        '<button class="chip" data-action="del" data-date="' + x.d + '" aria-label="Delete ' + x.d + '">Delete</button></div>';
+    }).join('') + '</div>';
+    if (ents.length > 14 && !ui.showAll) h += '<div class="row-btns"><button class="btn small" data-action="showall">Show all ' + ents.length + '</button></div>';
     return h;
   }
 
   function viewInsights(A) {
-    if (!A.series || !A.series.length) return emptyState().replace('Summary', 'Insights');
-    var u = unit(), h = header('Insights');
+    if (!A.series || !A.series.length) return emptyState('Insights');
+    var u = unit(), h = header('Insights'), cards = '';
 
-    // forecast + what-if
-    h += '<div class="card"><h3>Forecast</h3>';
-    if (!A.fc) h += '<div class="lead">Not enough recent data yet.</div><div class="sub">Needs 7 readings within the last 4 weeks.</div>';
+    // forecast
+    var f = '<div class="card c-7"><h3>' + (A.maintain ? 'Staying in range' : 'When you could reach your goal') + '</h3>';
+    if (!A.fc) f += '<div class="lead">Not enough data yet.</div><div class="sub">Needs 7 readings.</div>';
+    else if (A.maintain) {
+      f += '<div class="lead num">' + A.maint.inRange + ' of ' + A.maint.of + ' recent days inside your range</div><div class="sub">Range is ' + fw(A.goalKg - A.maint.band) + ' to ' + fw(A.goalKg + A.maint.band) + ' ' + u + '. ' +
+        (A.maint.drift !== null ? 'Trend is moving ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + ' per week.' : '') + '</div>';
+    } else if (!A.goalKg) {
+      var p30 = A.fc.points[30];
+      f += '<div class="lead num">In 30 days: about ' + fw(p30.mean) + ' ' + u + '</div><div class="sub num">Likely range ' + fw(p30.mean - A.Z80 * p30.sdRc) + ' to ' + fw(p30.mean + A.Z80 * p30.sdRc) + ' ' + u + '. Set a goal weight in Settings to get a date.</div>';
+    } else if (A.eta && A.eta.reached) f += '<div class="lead">Your trend is at or below your goal.</div>';
+    else if (!A.eta || !A.eta.median) f += '<div class="lead">No date yet.</div><div class="sub">In most simulated futures the trend does not reach ' + fw(A.goalKg) + ' ' + u + ' within 8 months at your recent pace. A slow or flat recent trend can do that.</div>';
     else {
-      var f30 = A.fc.points[30];
-      if (!A.goalKg) {
-        h += '<div class="lead">In 30 days at this pace: ' + fw(f30.mid) + ' ' + u + '</div><div class="sub num">Likely range ' + fw(f30.lo) + ' to ' + fw(f30.hi) + ' ' + u + '. Set a goal weight in Data to get a date.</div>';
-      } else if (A.eta.reached) {
-        h += '<div class="lead">Your trend is at or below your goal.</div>';
-      } else if (!A.eta.central) {
-        h += '<div class="lead">Your pace is flat or rising, so there is no date yet.</div><div class="sub">The forecast needs the last 4 weeks to trend down.</div>';
-      } else {
-        h += '<div class="lead">Goal weight around ' + fdate(A.eta.central, true) + '</div>' +
-          '<div class="sub">' + (A.eta.optimistic ? 'Likely window ' + fdate(A.eta.optimistic) + ' to ' + (A.eta.pessimistic ? fdate(A.eta.pessimistic) : 'later than we can estimate') + '. ' : '') +
-          (A.eta.damped ? 'If loss slows down the way it usually does, closer to ' + fdate(A.eta.damped, true) + '.' : 'If loss slows down the way it usually does, you may not reach it at this pace without a change.') + '</div>';
-        var need = A.paceTarget.source === 'date' ? A.paceTarget.kgPerWeek : null;
-        if (need) h += '<div class="sub" style="margin-top:8px">Your target date of ' + fdate(state.settings.goalDate, true) + ' needs ' + dsp(need).toFixed(2) + ' ' + u + '/wk. You are at ' + dsp(A.rate.lossPerWeek).toFixed(2) + '.</div>';
-        var v0 = Math.max(0.1, Math.min(1.2, A.rate.lossPerWeek));
-        h += '<div style="margin-top:14px"><div class="sub" style="font-weight:600">What if my pace were...</div>' +
-          '<input type="range" id="wi" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="' + (u === 'lb' ? '0.1' : '0.05') + '" value="' + dsp(v0).toFixed(2) + '" data-level="' + A.fc.level + '" data-goal="' + A.goalKg + '" data-last="' + A.last.n + '" aria-label="Weekly pace">' +
-          '<div class="lead num" id="wi-out" style="margin:4px 0 0"></div></div>';
+      var e = etaText(A);
+      f += '<div class="lead">Most likely ' + e.date + '</div>';
+      f += '<div class="sub">' + (e.win ? 'Likely window <b>' + e.win + '</b> (10th to 90th percentile). ' : '') +
+        (A.eta.firstReading ? 'A single reading could dip under goal as early as ' + fdate(A.eta.firstReading) + ', but the trend is the number that counts. ' : '') + '</div>';
+      if (A.eta.straight) f += '<div class="sub" style="margin-top:6px">A straight line at today\'s pace says ' + fdate(A.eta.straight) + '. Real loss usually slows, which is why the likely date is later.</div>';
+      if (state.settings.goalDate && A.targetProb !== undefined) {
+        var pc = Math.round(A.targetProb * 100);
+        f += '<div class="chips"><span class="chip ' + (pc >= 50 ? 'green' : 'orange') + ' num">' + pc + '% chance by ' + fdate(state.settings.goalDate, true) + '</span></div>';
       }
-      h += '<div class="sub" style="margin-top:10px">Based on ' + plural(A.rate.n, 'reading') + ' from the last 4 weeks. A forecast is a guess from your own recent pace, not a promise.</div>';
+      f += '<div style="margin-top:12px"><div class="sub" style="font-weight:600">Chance of being there by each date</div>' + slot('pb', probBuilder(160)) + '</div>';
+      var v0 = A.rate ? clamp(A.rate.lossPerWeek, 0.1, 1.2) : 0.5;
+      f += '<div style="margin-top:16px"><div class="sub" style="font-weight:600">What if my pace were...</div>' +
+        '<input type="range" id="wi" style="width:100%" min="' + dsp(0.1).toFixed(2) + '" max="' + dsp(1.2).toFixed(2) + '" step="' + (u === 'lb' ? '0.1' : '0.05') + '" value="' + dsp(v0).toFixed(2) + '" data-level="' + A.fc.level + '" data-goal="' + A.goalKg + '" data-last="' + A.last.n + '" aria-label="Weekly pace">' +
+        '<div class="lead num" id="wi-out" style="margin:4px 0 0"></div></div>';
     }
-    h += '</div>';
+    f += '</div>';
+    cards += f;
+
+    // reliability
+    var rel = '<div class="card c-5"><h3>How far to trust this</h3>';
+    if (A.backtest) {
+      var b = A.backtest, better = b.maeNaive > 0 ? 1 - b.maeModel / b.maeNaive : 0;
+      rel += '<div class="lead num">Past ' + b.h + ' day forecasts were off by ' + dsp(b.maeModel).toFixed(2) + ' ' + u + ' on average</div>' +
+        '<div class="sub">I replayed your history: at each point, forecast ' + b.h + ' days ahead, then compared with what happened (' + b.n + ' tests). Guessing "no change" would have been off by ' + dsp(b.maeNaive).toFixed(2) + ' ' + u + (better > 0.03 ? ', so the model is ' + Math.round(better * 100) + '% closer.' : '. The model is not clearly better than that yet.') + '</div>' +
+        (A.calib > 1.02 ? '<div class="sub" style="margin-top:6px">Your past forecasts were a bit too confident, so ranges are widened by ' + Math.round((A.calib - 1) * 100) + '%.</div>' : '') +
+        (Math.abs(b.bias) > 0.15 ? '<div class="sub" style="margin-top:6px">Forecasts have tended to run ' + dsp(Math.abs(b.bias)).toFixed(2) + ' ' + u + (b.bias > 0 ? ' too high' : ' too low') + '.</div>' : '');
+    } else rel += '<div class="sub">Needs about 3 weeks of readings to test itself against your history.</div>';
+    rel += '</div>';
+    cards += rel;
 
     // weekday
-    h += '<div class="card"><h3>Day of week</h3>';
-    if (!A.weekday) h += '<div class="sub">Needs about 4 weeks of readings.</div>';
+    var wd = '<div class="card c-6"><h3>Day of week</h3>';
+    if (!A.weekday) wd += '<div class="sub">Needs about 4 weeks of readings.</div>';
     else {
       var names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], order = [1, 2, 3, 4, 5, 6, 0];
-      var sig = A.weekday.filter(function (x) { return x.n >= 4 && Math.abs(x.mean) > Math.max(0.2, 2 * x.se); });
-      if (sig.length) {
-        sig.sort(function (a, b) { return Math.abs(b.mean) - Math.abs(a.mean); });
-        var t = sig[0];
-        h += '<div class="lead">' + names[t.dow] + ' readings run ' + dsp(Math.abs(t.mean)).toFixed(1) + ' ' + u + (t.mean > 0 ? ' higher' : ' lower') + ' than your weekly average.</div>';
-      } else h += '<div class="lead">No clear weekday pattern.</div>';
+      if (A.weekdaySig.length) { var t = A.weekdaySig[0]; wd += '<div class="lead">' + names[t.dow] + ' readings run ' + dsp(Math.abs(t.mean)).toFixed(1) + ' ' + u + (t.mean > 0 ? ' higher' : ' lower') + ' than your trend.</div>'; }
+      else wd += '<div class="lead">No clear weekday pattern.</div>';
       var mx = Math.max(0.3, Math.max.apply(null, A.weekday.map(function (x) { return Math.abs(x.mean); })));
-      h += '<div class="wd">' + order.map(function (i) {
-        var x = A.weekday[i], pct = Math.min(100, Math.abs(x.mean) / mx * 100), col = x.mean >= 0 ? 'var(--orange)' : 'var(--cyan)';
+      wd += '<div class="wd">' + order.map(function (i) {
+        var x = A.weekday[i], pct = Math.min(100, Math.abs(x.mean) / mx * 100), col = !A.weekdaySig.length ? '#48484a' : x.mean >= 0 ? 'var(--orange)' : 'var(--cyan)';
         return '<div class="col"><div class="up">' + (x.mean > 0 ? '<div class="bar" style="height:' + pct + '%;background:' + col + '"></div>' : '') + '</div><div class="dn">' + (x.mean < 0 ? '<div class="bar" style="height:' + pct + '%;background:' + col + '"></div>' : '') + '</div><div class="lab">' + names[i] + '</div></div>';
-      }).join('') + '</div><div class="sub" style="margin-top:6px">Difference from your 7 day average. Under about ' + dsp(0.2).toFixed(1) + ' ' + u + ' is mostly noise.</div>';
+      }).join('') + '</div><div class="sub" style="margin-top:6px">Reading minus trend, by weekday. Under about ' + dsp(0.2).toFixed(1) + ' ' + u + ' is mostly noise.</div>';
     }
-    h += '</div>';
+    wd += '</div>';
+    cards += wd;
 
-    // stalls
-    h += '<div class="card"><h3>Flat stretches</h3>';
-    if (A.stalledNow) {
-      var cs = A.stalls[A.stalls.length - 1];
-      h += '<div class="lead">Your trend has barely moved since ' + fdate(cs.from) + '.</div><div class="sub">Under ' + dsp(0.15).toFixed(2) + ' ' + u + ' of change in 10 days. Short flat stretches are common and often come from water. Keep logging so the trend can show what happens next.</div>';
-    } else h += '<div class="lead">Moving as expected.</div>';
-    var past = A.stalls.filter(function (s) { return !A.stalledNow || s !== A.stalls[A.stalls.length - 1]; });
-    if (past.length) h += '<div class="sub" style="margin-top:8px">Earlier flat stretches: ' + past.map(function (s) { return fdate(s.from) + ' to ' + fdate(s.to) + ' (' + s.days + ' days)'; }).join(', ') + '.</div>';
-    h += '</div>';
+    // flat stretch
+    var fl = '<div class="card c-6"><h3>Flat stretches</h3>';
+    if (!A.stall) fl += '<div class="sub">' + (A.maintain ? 'Not used while keeping steady.' : 'Needs about 3 weeks of readings.') + '</div>';
+    else if (A.stall.now) fl += '<div class="lead">Your trend has moved only ' + dsp(Math.abs(A.stall.change10)).toFixed(2) + ' ' + u + ' in 10 days.</div><div class="sub">Short flat spells are common and often water. Keep logging so the trend can show what happens next.</div>';
+    else fl += '<div class="lead">Moving as expected.</div><div class="sub">Trend changed ' + sgn(dsp(A.stall.change10), 2) + ' ' + u + ' over 10 days.</div>';
+    fl += '</div>';
+    if (!A.maintain) cards += fl;
 
-    // energy
-    h += '<div class="card"><h3>Energy balance</h3>';
-    if (!A.energy) h += '<div class="sub">Add height and age in Data to estimate calories.</div><div class="row-btns"><button class="btn small" data-tab="data">Add details</button></div>';
-    else if (!A.energy.deficit && A.energy.deficit !== 0) h += '<div class="sub">Needs a recent pace to compare against.</div>';
-    else {
-      h += '<div class="lead num">Your pace implies about ' + Math.round(Math.abs(A.energy.deficit) / 10) * 10 + ' kcal/day ' + (A.energy.deficit >= 0 ? 'below' : 'above') + ' what you burn.</div>' +
-        '<div class="list" style="background:var(--card2);margin:10px 0 0"><div class="li"><span>Resting (BMR)</span><span class="r num">' + Math.round(A.energy.bmr) + ' kcal</span></div>' +
-        '<div class="li"><span>Total burn (TDEE)</span><span class="r num">' + Math.round(A.energy.tdee) + ' kcal</span></div>' +
-        '<div class="li"><span>Implied intake</span><span class="r num">' + Math.round(A.energy.intake / 10) * 10 + ' kcal</span></div></div>' +
-        '<div class="sub" style="margin-top:8px">Uses the Mifflin-St Jeor equation and about 7,700 kcal per kg of change. These are estimates and can be off by a few hundred kcal. Use the implied intake to sanity check your own food log, not as a target.</div>';
-      if (A.energy.lowIntake) h += '<div class="warn" style="margin-top:10px">The implied intake is below your estimated resting needs. Often that means a short burst of water loss or a missing input, but if it holds, check in with a doctor or dietitian.</div>';
-    }
-    h += '</div>';
-
-    // anomalies + data quality
-    h += '<div class="card"><h3>Unusual readings</h3>';
-    if (!A.anomalies) h += '<div class="sub">Needs about 4 weeks of readings.</div>';
-    else if (!A.anomalies.length) h += '<div class="lead">Nothing stands out.</div>';
-    else h += '<div class="sub" style="margin-bottom:6px">Far from the 7 day average. Usually water, salt or timing, not fat.</div><div class="list" style="background:var(--card2);margin:0">' +
-      A.anomalies.map(function (a) { return '<div class="li"><span>' + fdate(a.d) + '</span><span class="r num">' + sgn(dsp(a.diff)) + ' ' + u + '</span></div>'; }).join('') + '</div>';
-    h += '</div>';
-
-    h += '<div class="card"><h3>Data quality</h3><div class="lead num">' + A.realCount + ' readings over ' + A.spanDays + ' days</div>';
-    var longGaps = A.gaps.filter(function (g) { return g.days >= 2; });
-    h += '<div class="sub">' + (A.estCount ? A.estCount + ' missing days are filled in with a straight line between your readings (hollow dots). ' : 'No gaps. ') +
-      (longGaps.length ? 'Longest gaps: ' + longGaps.sort(function (a, b) { return b.days - a.days; }).slice(0, 3).map(function (g) { return fdate(g.from) + ' to ' + fdate(g.to); }).join(', ') + '.' : '') + '</div></div>';
-    return h;
+    // data quality + outliers
+    var outs = A.series.filter(function (p) { return p.out; }).slice(-5).reverse();
+    var q = '<div class="card c-12"><h3>Your data</h3><div class="lead num">' + A.realCount + ' readings over ' + A.spanDays + ' days</div>';
+    var longGaps = A.gaps.filter(function (g) { return g.days >= 2; }).sort(function (a, b) { return b.days - a.days; }).slice(0, 3);
+    q += '<div class="sub">' + (A.estCount ? A.estCount + ' missing days are filled in with a straight line between readings (hollow dots), and they do not count as data. ' : 'No gaps. ') +
+      (longGaps.length ? 'Longest gaps: ' + longGaps.map(function (g) { return fdate(g.from) + ' to ' + fdate(g.to); }).join(', ') + '.' : '') + '</div>';
+    if (outs.length) q += '<div class="sub" style="margin-top:8px">Unusual readings, well away from the trend (usually water, salt or timing): ' + outs.map(function (p) { return fdate(p.d) + ' (' + sgn(dsp(p.raw - p.trend)) + ')'; }).join(', ') + '.</div>';
+    q += '</div>';
+    cards += q;
+    return h + '<div class="grid">' + cards + '</div>';
   }
 
-  function viewData(A) {
-    var s = state.settings, u = unit(), h = header('Data');
-    h += '<div class="row-btns" style="margin:0 4px 14px"><button class="btn primary" data-action="log">Log a weight</button></div>';
-
-    h += '<div class="h2">Import and export</div><div class="list">' +
-      '<button class="li" style="width:100%" data-action="pick-import"><span>Import Excel or CSV</span><span class="r">&rsaquo;</span></button>' +
-      '<button class="li" style="width:100%" data-action="export-xlsx"><span>Export to Excel</span><span class="r">&rsaquo;</span></button>' +
-      '<button class="li" style="width:100%" data-action="export-csv"><span>Export to CSV</span><span class="r">&rsaquo;</span></button>' +
-      '<button class="li" style="width:100%" data-action="backup"><span>Backup file (JSON)</span><span class="r">&rsaquo;</span></button>' +
-      '<button class="li" style="width:100%" data-action="pick-restore"><span>Restore backup</span><span class="r">&rsaquo;</span></button></div>' +
-      '<div class="note">Import reads the first sheet. It looks for a Date column and a Weight column, and merges by date, so you can re-import an updated sheet any time.</div>';
-
-    var ht;
-    if (u === 'lb') {
-      var tin = s.heightCm ? s.heightCm / 2.54 : 0, ft = s.heightCm ? Math.floor(tin / 12) : '', inch = s.heightCm ? Math.round(tin % 12) : '';
-      if (inch === 12) { ft += 1; inch = 0; }
-      ht = '<div class="li"><label>Height</label><span><input class="sm num" id="h-ft" type="number" inputmode="numeric" placeholder="ft" value="' + ft + '" data-set="height-imp"> <input class="sm num" id="h-in" type="number" inputmode="numeric" placeholder="in" value="' + inch + '" data-set="height-imp"></span></div>';
-    } else ht = '<div class="li"><label for="s-h">Height (cm)</label><input id="s-h" class="num" type="number" inputmode="decimal" placeholder="170" value="' + (s.heightCm || '') + '" data-set="heightCm"></div>';
+  function viewSettings() {
+    var s = state.settings, u = unit(), h = header('Settings');
+    var tin = s.heightCm ? s.heightCm / 2.54 : null, ft = tin ? Math.floor(tin / 12) : '', inch = tin ? num(tin - ft * 12, 1) : '';
     var opt = function (v, l, cur) { return '<option value="' + v + '"' + (String(cur) === String(v) ? ' selected' : '') + '>' + l + '</option>'; };
-    h += '<div class="h2">Profile and goal</div><div class="list">' +
-      '<div class="li"><label for="s-u">Units</label><select id="s-u" data-set="unit">' + opt('kg', 'kg', s.unit) + opt('lb', 'lb', s.unit) + '</select></div>' + ht +
-      '<div class="li"><label for="s-a">Age</label><input id="s-a" class="num" type="number" inputmode="numeric" placeholder="optional" value="' + (s.age || '') + '" data-set="age"></div>' +
-      '<div class="li"><label for="s-x">Sex (for calorie estimate)</label><select id="s-x" data-set="sex">' + opt('', 'Prefer not to say', s.sex) + opt('f', 'Female', s.sex) + opt('m', 'Male', s.sex) + '</select></div>' +
-      '<div class="li"><label for="s-ac">Activity level</label><select id="s-ac" data-set="activity">' + opt(1.2, 'Mostly sitting', s.activity) + opt(1.375, 'Light activity', s.activity) + opt(1.55, 'Moderate', s.activity) + opt(1.725, 'Very active', s.activity) + '</select></div>' +
-      '<div class="li"><label for="s-g">Goal weight (' + u + ')</label><input id="s-g" class="num" type="number" step="0.1" inputmode="decimal" placeholder="optional" value="' + (s.goalKg ? fw(s.goalKg) : '') + '" data-set="goal"></div>' +
-      '<div class="li"><label for="s-gd">Target date</label><input id="s-gd" type="date" value="' + esc(s.goalDate || '') + '" data-set="goalDate" style="color-scheme:dark"></div>' +
-      '<div class="li"><label for="s-b">BMI categories</label><select id="s-b" data-set="bmiScale">' + opt('who', 'Standard (WHO)', s.bmiScale) + opt('asia', 'Asia-Pacific cut-offs', s.bmiScale) + '</select></div></div>';
+    var hcm = s.hunit !== 'ftin';
 
-    h += '<div class="h2">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your data in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing. The app writes the file for you each time you log.</div>' +
+    h += '<div class="grid"><div class="c-6">';
+    h += '<div class="h2" style="margin-top:6px">Profile and goal</div>' +
+      '<div class="list"><div class="li"><label for="f-u">Weight unit</label><select id="f-u" data-unit="1">' + opt('kg', 'kg', s.unit) + opt('lb', 'lb', s.unit) + '</select></div>' +
+      '<div class="li"><label for="f-hu">Height unit</label><select id="f-hu">' + opt('cm', 'cm', s.hunit) + opt('ftin', 'ft and in', s.hunit) + '</select></div>' +
+      '<div class="li' + (hcm ? '' : ' hide') + '" id="hrow-cm"><label for="f-h">Height (cm)</label><input id="f-h" class="num w1" type="text" inputmode="decimal" placeholder="169.5" value="' + (s.heightCm ? num(s.heightCm, 1) : '') + '"></div>' +
+      '<div class="li' + (hcm ? ' hide' : '') + '" id="hrow-ft"><label for="f-ft">Height</label><span class="pair"><input id="f-ft" class="num w2" type="text" inputmode="decimal" placeholder="5" value="' + ft + '"> ft <input id="f-in" class="num w2" type="text" inputmode="decimal" placeholder="6.5" value="' + inch + '"> in</span></div>' +
+      '<div class="li"><label for="f-m">I am</label><select id="f-m">' + opt('lose', 'Losing weight', s.mode) + opt('maintain', 'Keeping weight steady', s.mode) + '</select></div>' +
+      '<div class="li"><label for="f-g" id="f-g-l">' + (s.mode === 'maintain' ? 'Target weight' : 'Goal weight') + ' (' + u + ')</label><input id="f-g" class="num w1" type="text" inputmode="decimal" placeholder="optional" value="' + (s.goalKg ? fw(s.goalKg, 1) : '') + '"></div>' +
+      '<div class="li' + (s.mode === 'maintain' ? ' hide' : '') + '" id="row-gd"><label for="f-gd">Target date</label><input id="f-gd" class="w3" type="date" value="' + esc(s.goalDate || '') + '"></div>' +
+      '<div class="li' + (s.mode === 'maintain' ? '' : ' hide') + '" id="row-band"><label for="f-b">Stay within ± (' + u + ')</label><input id="f-b" class="num w1" type="text" inputmode="decimal" value="' + fw(s.bandKg || 1, 1) + '"></div>' +
+      '<div class="li"><label for="f-bs">BMI categories</label><select id="f-bs">' + opt('who', 'Standard (WHO)', s.bmiScale) + opt('asia', 'Asia-Pacific cut-offs', s.bmiScale) + '</select></div></div>' +
+      '<div class="ferr hide" id="perr"></div><div class="row-btns" style="margin-top:0"><button class="btn primary" data-action="save-profile">Save</button></div>';
+
+    h += '<div class="h2">Your data</div><div class="list">' +
+      '<button class="li" data-action="pick-import"><span>Import Excel or CSV</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="export-xlsx"><span>Export to Excel</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="export-csv"><span>Export to CSV</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="backup"><span>Backup file (JSON)</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="pick-restore"><span>Restore backup</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="erase"><span class="red">Erase all readings</span><span class="r">&rsaquo;</span></button></div>' +
+      '<div class="note">Import looks for a Date column and a Weight column and merges by date, so you can re-import an updated sheet any time.</div>';
+    h += '</div><div class="c-6">';
+
+    h += '<div class="h2" style="margin-top:6px">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your data in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing.</div>' +
       '<div class="list">' +
-      '<div class="li"><label for="y-o">GitHub username</label><input id="y-o" data-sync="owner" autocapitalize="off" autocomplete="off" placeholder="your-name" value="' + esc(sync.owner) + '"></div>' +
-      '<div class="li"><label for="y-r">Private repo name</label><input id="y-r" data-sync="repo" autocapitalize="off" autocomplete="off" placeholder="vim-data" value="' + esc(sync.repo) + '"></div>' +
-      '<div class="li"><label for="y-p">File</label><input id="y-p" data-sync="path" autocapitalize="off" autocomplete="off" value="' + esc(sync.path) + '"></div>' +
-      '<div class="li"><label for="y-t">Access token</label><input id="y-t" data-sync="token" type="password" autocomplete="off" placeholder="github_pat_..." value="' + esc(sync.token) + '"></div></div>' +
-      '<div class="row-btns" style="margin:0 4px"><button class="btn primary small" data-action="sync-on">' + (sync.on ? 'Sync now' : 'Connect and sync') + '</button>' + (sync.on ? '<button class="btn small" data-action="sync-off">Disconnect</button>' : '') + '</div>' +
+      '<div class="li"><label for="y-o">GitHub username</label><input id="y-o" class="w3" autocapitalize="off" autocomplete="off" placeholder="your-name" value="' + esc(sync.owner) + '"></div>' +
+      '<div class="li"><label for="y-r">Private repo</label><input id="y-r" class="w3" autocapitalize="off" autocomplete="off" placeholder="vim-data" value="' + esc(sync.repo) + '"></div>' +
+      '<div class="li"><label for="y-p">File</label><input id="y-p" class="w3" autocapitalize="off" autocomplete="off" value="' + esc(sync.path) + '"></div>' +
+      '<div class="li"><label for="y-t">Access token</label><input id="y-t" class="w3" type="password" autocomplete="off" placeholder="github_pat_..." value="' + esc(sync.token) + '"></div></div>' +
+      '<div class="row-btns" style="margin-top:0"><button class="btn primary small" data-action="sync-on">' + (sync.on ? 'Save and sync now' : 'Connect and sync') + '</button>' + (sync.on ? '<button class="btn small" data-action="sync-off">Disconnect</button>' : '') + '</div>' +
       '<div id="sync-status" class="status ' + ui.cls + '">' + esc(ui.msg || (sync.on && sync.last ? 'Last synced ' + new Date(sync.last).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : (sync.on ? 'Connected' : 'Not connected'))) + '</div>' +
-      '<div class="note">The token is stored only in this browser. Use a fine-grained token limited to that one repo with Contents: read and write. Setup steps are in the README.</div>';
-
-    var ents = live().reverse(), shown = ui.showAll ? ents : ents.slice(0, 30);
-    h += '<div class="h2">Readings (' + ents.length + ')</div>';
-    if (!ents.length) h += '<div class="note">Nothing yet.</div>';
-    else {
-      h += '<div class="list">' + shown.map(function (e) {
-        return '<div class="li"><button data-action="edit" data-date="' + e.d + '" style="flex:1;text-align:left;min-height:32px"><span>' + fdate(e.d, true) + '</span></button><span class="r num">' + fw(e.kg) + ' ' + u + '</span><button class="x" data-action="del" data-date="' + e.d + '" aria-label="Delete ' + e.d + '">&times;</button></div>';
-      }).join('') + '</div>';
-      if (ents.length > 30 && !ui.showAll) h += '<div class="row-btns" style="margin:0 4px"><button class="btn small" data-action="showall">Show all ' + ents.length + '</button></div>';
-    }
-    h += '<div class="h2">Danger zone</div><div class="row-btns" style="margin:0 4px 20px"><button class="btn danger small" data-action="erase">Erase all readings</button></div>';
+      '<div class="note">The token stays in this browser only. Use a fine-grained token limited to that one repo with Contents: read and write.</div>';
+    h += '<div class="h2">About the numbers</div><div class="note" style="margin-top:0">Trend weight comes from a Kalman filter: it treats each reading as the true weight plus scale noise, and learns how noisy your scale is from your own data. Forecasts are simulated from that model, then checked against your history and widened when past forecasts were too confident. Nothing leaves this device except the optional sync above.</div>';
+    h += '</div></div>';
     return h;
   }
 
-  var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, data: viewData };
+  function saveProfile() {
+    var s = state.settings, errs = [], g = $('#f-g').value.trim(), hu = $('#f-hu').value, mode = $('#f-m').value;
+    var u = unit(), heightCm = null, goalKg = null, goalDate = '', bandKg = s.bandKg || 1;
+    if (hu === 'cm') {
+      var hv = $('#f-h').value.trim();
+      if (hv) { var c = parseNum(hv); if (!isFinite(c) || c < 100 || c > 230) errs.push('Height should be between 100 and 230 cm (decimals are fine, like 169.5).'); else heightCm = c; }
+    } else {
+      var ft = $('#f-ft').value.trim(), inc = $('#f-in').value.trim();
+      if (ft || inc) {
+        var f = ft ? parseNum(ft) : 0, i = inc ? parseNum(inc) : 0, cm = (f * 12 + i) * 2.54;
+        if (!isFinite(f) || !isFinite(i) || f < 0 || i < 0 || cm < 100 || cm > 230) errs.push('Height should be between 3 ft 4 in and 7 ft 7 in (decimals are fine, like 5 ft 6.5 in).'); else heightCm = cm;
+      }
+    }
+    if (g) { var gv = parseNum(g), gk = fromDsp(gv); if (!isFinite(gv) || gk < 25 || gk > 400) errs.push('Goal weight looks off. Check the number and the unit (' + u + ').'); else goalKg = gk; }
+    var gd = $('#f-gd').value;
+    if (mode === 'lose' && gd) { if (gd <= S.localToday()) errs.push('Target date should be in the future.'); else goalDate = gd; }
+    if (mode === 'maintain') {
+      var bv = parseNum($('#f-b').value), bk = fromDsp(bv);
+      if (!isFinite(bv) || bk <= 0 || bk > 20) errs.push('The range should be a positive number, like 1.0.'); else bandKg = bk;
+      if (!goalKg) errs.push('Enter the weight you want to keep.');
+    }
+    var box = $('#perr');
+    if (errs.length) { box.innerHTML = errs.map(esc).join('<br>'); box.classList.remove('hide'); return; }
+    box.classList.add('hide');
+    s.hunit = hu; s.heightCm = heightCm === null ? null : +heightCm.toFixed(2); s.goalKg = goalKg === null ? null : +goalKg.toFixed(3);
+    s.goalDate = goalDate; s.mode = mode; s.bandKg = +bandKg.toFixed(3); s.bmiScale = $('#f-bs').value;
+    state.st = Date.now(); persist(); analyze(); render(); toast('Saved');
+  }
+  function saveSyncForm() {
+    var o = $('#y-o').value.trim(), r = $('#y-r').value.trim(), p = $('#y-p').value.trim() || 'data.json', t = $('#y-t').value.trim();
+    if (!o || !r || !t) { toast('Fill in username, repo and token'); return; }
+    sync.owner = o; sync.repo = r; sync.path = p; sync.token = t; sync.on = true; saveSync();
+    doSync().then(function () { if (ui.tab === 'settings') render(); });
+  }
+
+  var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, settings: viewSettings };
 
   function render() {
-    var A = lastA || analyze(), v = $('#view');
-    var y = window.scrollY;
+    var A = lastA || analyze(), v = $('#view'), c = $('#content');
+    var y = window.scrollY, cy = c ? c.scrollTop : 0;
+    builders = {};
     v.innerHTML = VIEWS[ui.tab](A);
-    document.querySelectorAll('.tab[data-tab]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === ui.tab); });
-    C.bind(v); C.animateRings(v);
-    updateWhatIf();
-    window.scrollTo(0, y);
+    $$('.tab[data-tab]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === ui.tab); });
+    drawCharts(); C.animateRings(v); updateChip(); updateWhatIf();
+    window.scrollTo(0, y); if (c) c.scrollTop = cy;
   }
   function updateWhatIf() {
     var el = $('#wi'); if (!el) return;
@@ -685,52 +801,75 @@
   }
 
   /* ---------------------------------------------------------------- events */
+  function goTab(t) { ui.tab = t; ui.showAll = false; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
   document.addEventListener('click', function (e) {
+    var tb = e.target.closest('[data-toast]'); if (tb) { var fn = toastFn; $('#toast').classList.remove('show'); toastFn = null; if (fn) fn(); return; }
     var t = e.target.closest('[data-action],[data-tab],[data-range]'); if (!t) return;
-    if (t.dataset.tab) { ui.tab = t.dataset.tab; render(); window.scrollTo(0, 0); return; }
+    if (t.dataset.tab) { goTab(t.dataset.tab); return; }
     if (t.dataset.range) { ui.range = t.dataset.range; render(); return; }
     var a = t.dataset.action;
     if (a === 'log') openLog();
     else if (a === 'fc') { ui.fc = !ui.fc; render(); }
     else if (a === 'edit') openLog(t.dataset.date);
-    else if (a === 'del') { if (confirm('Delete the reading from ' + fdate(t.dataset.date, true) + '?')) deleteEntry(t.dataset.date); }
+    else if (a === 'del') deleteEntry(t.dataset.date);
     else if (a === 'showall') { ui.showAll = true; render(); }
     else if (a === 'pick-import') $('#file-import').click();
     else if (a === 'pick-restore') $('#file-restore').click();
     else if (a === 'export-csv') exportCSV();
     else if (a === 'export-xlsx') exportXLSX();
     else if (a === 'backup') backup();
+    else if (a === 'save-profile') saveProfile();
+    else if (a === 'to-maintain') {
+      state.settings.mode = 'maintain'; state.settings.goalDate = ''; state.st = Date.now(); persist(); analyze(); render(); toast('Now keeping weight steady around ' + fw(state.settings.goalKg) + ' ' + unit());
+    }
     else if (a === 'erase') {
-      if (confirm('Erase every reading on this device? If sync is on, the repo copy is cleared too. Make a backup first if unsure.')) {
-        var now = Date.now(); Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: state.entries[k].kg, t: now, del: true }; });
-        persist(); analyze(); render(); toast('All readings erased');
-      }
+      openSheet('<h2>Erase all readings?</h2><div class="sub">This clears every reading on this device. If sync is on, the repo copy is cleared too. A backup file first is a good idea.</div>' +
+        '<div class="row-btns"><button class="btn danger" id="erase-go">Erase everything</button><button class="btn" id="erase-no">Cancel</button></div>', function (el) {
+        $('#erase-no', el).addEventListener('click', closeSheet);
+        $('#erase-go', el).addEventListener('click', function () {
+          var now = Date.now(); Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: state.entries[k].kg, t: now, del: true }; });
+          persist(); closeSheet(); analyze(); render(); toast('All readings erased');
+        });
+      });
     }
-    else if (a === 'sync-on') {
-      if (!sync.owner || !sync.repo || !sync.token) { toast('Fill in username, repo and token'); return; }
-      sync.on = true; saveSync(); doSync().then(function () { render(); });
-    }
+    else if (a === 'sync-on') saveSyncForm();
     else if (a === 'sync-off') { sync.on = false; sync.token = ''; saveSync(); setStatus('Disconnected. Local data kept.'); render(); }
   });
   document.addEventListener('change', function (e) {
     var t = e.target;
-    if (t.dataset && t.dataset.set) { setSetting(t.dataset.set, t.value); return; }
-    if (t.dataset && t.dataset.sync) { sync[t.dataset.sync] = t.value.trim(); if (t.dataset.sync === 'path' && !sync.path) sync.path = 'data.json'; saveSync(); }
+    if (t.id === 'f-u') { state.settings.unit = t.value; state.st = Date.now(); persist(); analyze(); render(); return; }
+    if (t.id === 'f-hu') { var cm = t.value === 'cm'; $('#hrow-cm').classList.toggle('hide', !cm); $('#hrow-ft').classList.toggle('hide', cm); return; }
+    if (t.id === 'f-m') {
+      var m = t.value === 'maintain'; $('#row-gd').classList.toggle('hide', m); $('#row-band').classList.toggle('hide', !m);
+      $('#f-g-l').textContent = (m ? 'Target weight' : 'Goal weight') + ' (' + unit() + ')';
+    }
   });
   document.addEventListener('input', function (e) { if (e.target.id === 'wi') updateWhatIf(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeSheet(); return; }
+    var tag = (e.target.tagName || '').toLowerCase();
+    if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'select' && tag !== 'textarea' && !$('#scrim')) { e.preventDefault(); openLog(); }
+  });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) { analyze(); render(); doSync(); } });
 
   function init() {
     ['import', 'restore'].forEach(function (k) {
       var f = document.createElement('input'); f.type = 'file'; f.id = 'file-' + k; f.className = 'hide';
-      f.accept = k === 'import' ? '.xlsx,.xls,.csv,.txt' : '.json';
+      f.accept = k === 'import' ? '.xlsx,.xls,.csv,.txt,.json' : '.json';
       f.addEventListener('change', function () { if (f.files[0]) { if (k === 'import') handleImportFile(f.files[0]); else restoreBackup(f.files[0]); } f.value = ''; });
       document.body.appendChild(f);
     });
     analyze(); render();
+    // charts are drawn at real pixel width, so redraw when the window or frame changes size
+    var c = $('#content'); lastW = c.clientWidth;
+    var pending = false, onSize = function () {
+      var w = c.clientWidth; if (Math.abs(w - lastW) < 2 || pending) return; lastW = w; pending = true;
+      requestAnimationFrame(function () { pending = false; drawCharts(); });
+    };
+    if (window.ResizeObserver) new ResizeObserver(onSize).observe(c); else window.addEventListener('resize', onSize);
     if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !DEMO) navigator.serviceWorker.register('sw.js').catch(function () { /* offline cache is optional */ });
     doSync();
   }
   init();
-  window.__wt = { state: function () { return state; }, setTab: function (t) { ui.tab = t; render(); }, ui: ui, render: render };
+  window.__wt = { state: function () { return state; }, setTab: function (t) { goTab(t); }, ui: ui, render: render, analyze: function () { return lastA; } };
 })();

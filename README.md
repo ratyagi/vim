@@ -1,22 +1,38 @@
 # Vim
 
-A private weight trend tracker. Rings, trend line, BMI, forecast, weekday patterns, energy estimate.
-Static site. No server, no accounts, no tracking.
+A private weight trend tracker. Activity rings, a noise-filtered trend line, a goal date with a likely window and probabilities, BMI, and a self-check of how accurate its own forecasts have been.
+Static site. No server, no accounts, no tracking. Opens as a framed window on desktop and as a full-screen app on phones.
+
+## What it does with your numbers
+
+- **Trend weight**: a Kalman filter treats each reading as true weight plus scale noise and learns your noise level from your own data. Missing days are skipped, not invented.
+- **Pace**: kg per week with an uncertainty band, so a shaky pace looks shaky.
+- **Goal date**: thousands of simulated futures from the fitted model. You get the most likely date, a 10th to 90th percentile window, and the chance of being there by a date.
+- **Self-check**: it replays your history, forecasting 7 days ahead at every point, and compares with what happened. If past forecasts were too confident, ranges are widened.
+- **Keep steady mode**: after you reach a goal, track time inside a range instead.
+- Decimals work in every field (72.4, 72,4, 169.5, 5 ft 6.5 in).
 
 ## How your data stays private
 
 - The site (GitHub Pages) holds **code only**. Anyone who finds the URL sees an empty app.
 - Your readings live in **this browser** (localStorage).
-- Optional: a copy goes into a **separate private repo** so phone and laptop match.
-- The app writes that file for you each time you log. You never commit by hand.
+- Optional: a copy goes into a **separate private repo** so phone and laptop match. The app writes that file for you each time you log.
 - `.gitignore` blocks spreadsheets and data files from the public repo.
 - The page asks search engines not to index it.
 
 Worth flagging:
-- GitHub Pages on a free plan needs a public repo. That is fine because the repo has no data.
-- Do not add your Excel file or `data.json` to the public repo. Ever.
+- Do not add your Excel file or `data.json` to the public repo.
 - The sync token sits in this browser's storage. Use a token limited to the one private repo.
-- If you want the site itself locked, host it on Cloudflare Pages behind Cloudflare Access instead (free for small use).
+
+## Updating the live site after changing files
+
+```
+git add .
+git commit -m "Update Vim"
+git push
+```
+
+Pages redeploys in about a minute. Hard refresh once (or close and reopen the installed app) to pick up the new version.
 
 ## Setup (about 10 minutes)
 
@@ -37,7 +53,7 @@ Worth flagging:
 - Set an expiry (1 year is fine). Copy the token.
 
 ### 4. Connect the app
-- Open the app > **Data** tab.
+- Open the app > **Settings** tab.
 - Import your Excel sheet (first sheet, a Date column and a Weight column).
 - Fill in height, age, goal weight, target date.
 - Private sync: username, `vim-data`, file `data.json`, paste token > **Connect and sync**.
@@ -57,15 +73,14 @@ Worth flagging:
 
 ## What the numbers mean
 
-- **Trend weight**: smoothed weight (exponential average). Daily readings swing 1 to 2 kg from water.
-- **Pace**: straight-line fit to your readings from the last 4 weeks.
-- **Forecast**: "Same pace" continues that line. "If it slows" fades the pace out by about 1.5% per day.
-- **Shaded band**: 80% range for the trend line.
-- **Goal date window**: from the uncertainty in your pace.
-- **Weekday effect**: each reading minus its centered 7 day average, grouped by weekday.
+- **Trend weight**: Kalman filter estimate of true weight. Daily readings swing 1 to 2 kg from water.
+- **Pace**: the filter's own estimate of kg per week, with an 80% band. It slows down over time (damped), as real loss usually does.
+- **Forecast**: the green dashed line is the model's expectation, the shaded area the likely range for a single reading. "Same pace" (cyan) is a plain straight line, shown for comparison.
+- **Goal date**: 2,000 simulated futures. The window is the 10th to 90th percentile of when the trend first reaches your goal.
+- **How far to trust this**: back-test of 7 day forecasts on your own history against a "no change" guess.
+- **Weekday effect**: each reading minus its trend, grouped by weekday. Shown only when it is larger than noise.
 - **Flat stretch**: trend moved less than 0.15 kg in 10 days.
-- **Energy**: Mifflin-St Jeor resting rate x activity, and about 7,700 kcal per kg of change. Rough.
-- **BMI**: WHO cut-offs, or Asia-Pacific cut-offs in Data. It is a screen, not a diagnosis.
+- **BMI**: WHO cut-offs, or Asia-Pacific cut-offs in Settings. It is a screen, not a diagnosis.
 - The app warns if pace is above 1% of body weight per week.
 
 ## Try it with fake data
@@ -75,7 +90,8 @@ Open the app with `#demo` on the end of the URL. Nothing is saved in that mode.
 ## Files
 
 - `index.html`, `style.css`: shell and look
-- `stats.js`: all the math (runs in Node too)
+- `model.js`: Kalman filter, forecast, simulation, back-test (runs in Node too)
+- `stats.js`: turns readings into everything the screens show (runs in Node too)
 - `charts.js`: charts and rings
 - `app.js`: storage, import/export, sync, screens
 - `lib/xlsx.full.min.js`: SheetJS 0.18.5, bundled so no third-party script loads
