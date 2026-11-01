@@ -268,3 +268,14 @@ input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:foc
   .li input.w3 { flex: 1 1 100%; max-width: none; text-align: left; }
 }
 .rstat .v small { margin-left: 3px; }
+
+/* ---- usability round 2 */
+html.sheet-open, html.sheet-open body { overflow: hidden; }
+html.sheet-open #content { overflow: hidden; }
+#view:focus { outline: none; }
+#toast { white-space: nowrap; padding: 0 8px 0 18px; min-height: 48px; max-width: calc(100vw - 24px); gap: 6px; }
+#toast .tmsg { overflow: hidden; text-overflow: ellipsis; }
+#toast button { min-width: 64px; min-height: 44px; padding: 0 12px; flex: none; }
+.legend i.dot2 { width: 14px; height: 4px; border-radius: 2px; background: radial-gradient(circle, currentColor 1.2px, transparent 1.6px) 0 50% / 5px 4px repeat-x; }
+button.li { min-height: 52px; }
+#imp-prev { margin: 10px 0 0; } #imp-prev .li { min-height: 40px; padding: 8px 16px; }

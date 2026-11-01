@@ -21,10 +21,14 @@
   function f1(x) { return x.toFixed(1); }
   function pts(arr, x, y) { return arr.map(function (p) { return f1(x(p.n)) + ',' + f1(y(p.v)); }); }
   function xticks(s, o, x, W, H, padB) {
-    var xt = Math.max(2, Math.min(5, Math.floor(W / 110)));
+    var span = o.n1 - o.n0;
+    if (span <= 0) { s.push('<text x="' + f1(x(o.n0)) + '" y="' + (H - 7) + '" text-anchor="start">' + dateShort(o.n0) + '</text>'); return; }
+    var xt = Math.min(span, Math.max(2, Math.min(5, Math.floor(W / 110))));
+    var lastLab = null;
     for (var i = 0; i <= xt; i++) {
-      var n = Math.round(o.n0 + (o.n1 - o.n0) * i / xt);
-      s.push('<text x="' + f1(x(n)) + '" y="' + (H - 7) + '" text-anchor="' + (i === 0 ? 'start' : i === xt ? 'end' : 'middle') + '">' + dateShort(n) + '</text>');
+      var n = Math.round(o.n0 + span * i / xt), lab = dateShort(n);
+      if (lab === lastLab) continue; lastLab = lab;
+      s.push('<text x="' + f1(x(n)) + '" y="' + (H - 7) + '" text-anchor="' + (i === 0 ? 'start' : i === xt ? 'end' : 'middle') + '">' + lab + '</text>');
     }
   }
 
@@ -74,8 +78,17 @@
       s.push('<polyline points="' + tp.join(' ') + '" fill="none" stroke="'+TH.a+'" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>');
     }
     if (o.fc) {
-      if (o.fc.straight) s.push('<polyline points="' + pts(o.fc.straight, x, y).join(' ') + '" fill="none" stroke="'+TH.c+'" stroke-width="2" stroke-dasharray="2 5" stroke-linecap="round"/>');
-      s.push('<polyline points="' + pts(o.fc.mid, x, y).join(' ') + '" fill="none" stroke="'+TH.b+'" stroke-width="2.2" stroke-dasharray="6 5" stroke-linecap="round"/>');
+      if (o.fc.straight) s.push('<polyline points="' + pts(o.fc.straight, x, y).join(' ') + '" fill="none" stroke="'+TH.c+'" stroke-width="2.6" stroke-dasharray="1 6" stroke-linecap="round"/>');
+      s.push('<polyline points="' + pts(o.fc.mid, x, y).join(' ') + '" fill="none" stroke="'+TH.b+'" stroke-width="2.4" stroke-dasharray="9 5"/>');
+      var em = o.fc.mid[o.fc.mid.length - 1], es = o.fc.straight && o.fc.straight[o.fc.straight.length - 1];
+      if (em && o.fc.mid.length > 8) {
+        var ym = y(em.v), ys = es ? y(es.v) : null, ex = f1(x(em.n) - 4);
+        if (ys !== null && Math.abs(ym - ys) >= 16) {
+          var mUp = ym < ys;
+          s.push('<text x="' + ex + '" y="' + f1(ym + (mUp ? -8 : 15)) + '" text-anchor="end" style="fill:'+TH.b+'">Forecast</text>');
+          s.push('<text x="' + ex + '" y="' + f1(ys + (mUp ? 15 : -8)) + '" text-anchor="end" style="fill:'+TH.c+'">Straight line</text>');
+        } else s.push('<text x="' + ex + '" y="' + f1(ym - 8) + '" text-anchor="end" style="fill:'+TH.b+'">Forecast</text>');
+      }
     }
     o.raw.forEach(function (p) {
       var cx = f1(x(p.n)), cy = f1(y(p.v));

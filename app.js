@@ -100,12 +100,13 @@
   /* ---------------------------------------------------------------- toast + sheets */
   var toastT, toastFn = null;
   function toast(msg, label, fn) {
-    var t = $('#toast'); t.textContent = msg; toastFn = null;
+    var t = $('#toast'); t.innerHTML = ''; toastFn = null;
+    var sp = document.createElement('span'); sp.className = 'tmsg'; sp.textContent = msg; t.appendChild(sp);
     if (label && fn) {
       var b = document.createElement('button'); b.textContent = label; b.setAttribute('data-toast', '1'); t.appendChild(b); toastFn = fn;
     }
     t.classList.add('show');
-    clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); toastFn = null; }, label ? 6000 : 2800);
+    clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); toastFn = null; }, label ? 8000 : 2800);
   }
   var lastFocus = null;
   function openSheet(html, mount) {
@@ -114,11 +115,15 @@
     el.innerHTML = '<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>' + html + '</div>';
     el.addEventListener('click', function (e) { if (e.target === el) closeSheet(); });
     document.body.appendChild(el);
+    var hd = $('h2', el); if (hd) { hd.id = 'sheet-title'; $('.sheet', el).setAttribute('aria-labelledby', 'sheet-title'); }
+    document.documentElement.classList.add('sheet-open');
     if (mount) mount(el);
   }
   function closeSheet() {
     var s = $('#scrim'); if (s) s.remove();
-    if (lastFocus && lastFocus.focus) { try { lastFocus.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+    document.documentElement.classList.remove('sheet-open');
+    var back = lastFocus && document.body.contains(lastFocus) ? lastFocus : $('#view');
+    if (back && back.focus) { try { back.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
     lastFocus = null;
   }
 
@@ -138,12 +143,14 @@
       '<div class="chips-row"><button class="chip" id="d-today">Today</button><button class="chip" id="d-yest">Yesterday</button>' +
       '<input id="ld" class="datein" type="date" value="' + date + '" max="' + today + '" aria-label="Date"></div>' +
       '<div class="ferr hide" id="lerr"></div>' +
-      '<button class="btn primary block" id="lsave">Save</button>',
+      '<button class="btn primary block" id="lsave">Save</button>' +
+      '<button class="btn danger block hide" id="ldel" style="margin-top:10px">Delete this reading</button>',
       function (el) {
-        var w = $('#lw', el), d = $('#ld', el), hint = $('#ld-hint', el), err = $('#lerr', el), btn = $('#lsave', el), title = $('#lt', el);
+        var w = $('#lw', el), d = $('#ld', el), hint = $('#ld-hint', el), err = $('#lerr', el), btn = $('#lsave', el), title = $('h2', el);
         w.focus(); w.select();
         function refresh() {
           var dv = d.value, ex = entryKg(dv), v = parseNum(w.value);
+          $('#ldel', el).classList.toggle('hide', ex === null);
           btn.textContent = ex !== null ? 'Update' : 'Save'; title.textContent = ex !== null ? 'Update weight' : 'Log weight';
           var txt = unit();
           if (isFinite(v) && hasData) {
@@ -175,6 +182,7 @@
           saveEntry(d.value, w.value); closeSheet();
         }
         btn.addEventListener('click', go);
+        $('#ldel', el).addEventListener('click', function () { var dv = d.value; closeSheet(); deleteEntry(dv); });
         refresh(); markDates();
       });
   }
@@ -193,7 +201,7 @@
     state.entries[date] = { kg: +kg.toFixed(4), t: Date.now() };
     persist(); var A = analyze(); render();
     var msg = 'Saved.';
-    if (A.streak.current > 1 && date >= S.dayStr(A.todayN - 1)) msg = 'Saved. ' + A.streak.current + ' day streak.';
+    if (A.streak.current > 1 && date >= S.dayStr(A.todayN - 1)) msg = 'Saved. ' + plural(A.streak.current, 'day') + ' streak.';
     if (A.reached && !(before.reached) && !A.maintain && A.goalKg) msg = 'Saved. Your trend is at your goal.';
     else if (prevTrend !== null && A.hasModel && A.currentKg < Math.min.apply(null, A.series.slice(0, -1).map(function (p) { return p.trend; })) - 1e-6) msg = 'Saved. New lowest trend weight.';
     toast(msg, 'Undo', function () {
@@ -326,9 +334,25 @@
       '<div class="li"><span>Typical value</span><span class="r num">' + p.median.toFixed(1) + '</span></div>' +
       '<div class="li"><label for="iu">Values are in</label><select id="iu"><option value="kg"' + (u === 'kg' ? ' selected' : '') + '>kg</option><option value="lb"' + (u === 'lb' ? ' selected' : '') + '>lb</option></select></div>' +
       '<div class="li"><label for="im">Existing readings</label><select id="im"><option value="merge">Keep, update same dates</option><option value="replace">Replace everything</option></select></div></div>' +
+      '<div class="list" id="imp-prev"></div><div class="note" id="imp-sum"></div>' +
       '<div class="note">' + esc(p.info) + (p.skipped ? ' ' + plural(p.skipped, 'row') + ' skipped (not readable).' : '') + (guessLb ? ' Values look like lb, so lb is selected.' : '') + '</div>' +
       '<button class="btn primary block" id="idoit">Import</button>',
       function (el) {
+        function summary() {
+          var iu = $('#iu', el).value, mode = $('#im', el).value, ex = 0, diff = 0;
+          p.keys.forEach(function (d) {
+            var cur = entryKg(d); if (cur === null) return; ex++;
+            var kg = iu === 'lb' ? p.map[d] / LB : p.map[d]; if (Math.abs(kg - cur) > 0.05) diff++;
+          });
+          var keep = {}; p.keys.forEach(function (d) { keep[d] = 1; });
+          var gone = mode === 'replace' ? live().filter(function (e) { return !keep[e.d]; }).length : 0;
+          var rows = p.keys.length <= 6 ? p.keys : p.keys.slice(0, 4), more = p.keys.length - rows.length;
+          $('#imp-prev', el).innerHTML = rows.map(function (d) { return '<div class="li"><span>' + fdate(d, true) + '</span><span class="r num">' + p.map[d].toFixed(1) + ' ' + iu + '</span></div>'; }).join('') +
+            (more > 0 ? '<div class="li"><span class="r">and ' + more + ' more, last is ' + fdate(p.keys[p.keys.length - 1], true) + '</span></div>' : '');
+          $('#imp-sum', el).innerHTML = '<b>' + plural(p.keys.length - ex, 'new day') + '</b>, ' + plural(ex, 'day') + ' already ' + (ex === 1 ? 'has' : 'have') + ' a reading (' + diff + ' with a different value, will be overwritten).' +
+            (mode === 'replace' ? ' <b class="red">' + plural(gone, 'existing reading') + ' not in this file will be removed.</b>' : '');
+        }
+        $('#iu', el).addEventListener('change', summary); $('#im', el).addEventListener('change', summary); summary();
         $('#idoit', el).addEventListener('click', function () {
           var iu = $('#iu', el).value, mode = $('#im', el).value, now = Date.now(), n = 0, bad = 0;
           if (mode === 'replace') Object.keys(state.entries).forEach(function (k) { state.entries[k] = { kg: state.entries[k].kg, t: now, del: true }; });
@@ -483,7 +507,7 @@
       var byN = {}; ser.forEach(function (p) { byN[p.n] = p; });
       var u = unit();
       var readout = function (n) {
-        if (n === null) return '<b class="num">' + fw(last.trend) + '</b>' + u + ' trend<br><span>Drag across the chart for any day</span>';
+        if (n === null) return '<b class="num">' + fw(last.trend) + '</b>' + u + ' trend<br><span>' + (window.matchMedia && matchMedia('(hover: hover)').matches ? 'Hover over' : 'Touch and drag across') + ' the chart for any day</span>';
         if (n <= last.n && byN[n]) {
           var p = byN[n];
           return '<b class="num">' + fw(p.trend) + '</b>' + u + ' trend<br><span>' + fdate(p.d) + (p.raw !== null ? ' &middot; reading ' + fw(p.raw) : ' &middot; no reading (estimated)') + '</span>';
@@ -549,7 +573,7 @@
     return '<div class="legend"><span><i style="background:var(--red)"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
       '<span><i class="box"></i>Usual scatter</span>' +
       (A.estCount ? '<span><i class="dot" style="border:1px solid #8e8e93"></i>Filled in</span>' : '') +
-      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dash"></i>Same pace</span>') : '') + '</div>';
+      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dot2"></i>Straight line</span>') : '') + '</div>';
   }
 
   /* ---------------------------------------------------------------- screens */
@@ -574,7 +598,7 @@
 
     var r1, r2, r3, c7 = A.change7;
     if (A.maintain) {
-      r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + A.maint.of + ' days within \u00b1' + fw(A.maint.band) + ' ' + u : '' };
+      r1 = { pct: A.maint ? A.maint.pct : 0, k: 'In range, last 14 days', v: A.maint ? Math.round(A.maint.pct * 100) : 0, unitLabel: '%', n: A.maint ? A.maint.inRange + ' of ' + plural(A.maint.of, 'day') + ' within \u00b1' + fw(A.maint.band) + ' ' + u : '' };
       r2 = { pct: c7 === null ? 0 : Math.max(0, 1 - Math.abs(c7) / A.maint.band), k: 'Last 7 days', v: c7 === null ? '--' : sgn(dsp(c7)), unitLabel: u, n: 'closer to 0 is steadier' };
     } else {
       var gt = goal ? fw(A.lostKg) + ' of ' + fw(A.startKg - goal) + ' ' + u : fw(A.lostKg) + ' of ' + fw(A.startKg * 0.05) + ' ' + u + ' (first 5%)';
@@ -610,8 +634,8 @@
     h += '<div class="card">' + rangeControls() + slot('sum', weightChart('sum', 240)) + legend(A) + '</div>';
 
     var t = '';
-    if (A.maintain) t += '<div class="card tile"><div class="k">Drift</div><div class="v green num">' + (A.maint.drift !== null ? sgn(dsp(A.maint.drift), 2) : '--') + '<small>' + u + '/wk</small></div><div class="n">best streak ' + st.longest + ' days</div></div>';
-    else t += '<div class="card tile"><div class="k">Pace</div><div class="v green num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n">' + (A.rate ? 'best streak ' + st.longest + ' days' : 'needs about 10 readings') + '</div></div>';
+    if (A.maintain) t += '<div class="card tile"><div class="k">Drift</div><div class="v green num">' + (A.maint.drift !== null ? sgn(dsp(A.maint.drift), 2) : '--') + '<small>' + u + '/wk</small></div><div class="n">best streak ' + plural(st.longest, 'day') + '</div></div>';
+    else t += '<div class="card tile"><div class="k">Pace</div><div class="v green num">' + (A.rate ? dsp(A.rate.lossPerWeek).toFixed(2) : '--') + '<small>' + u + '/wk</small></div><div class="n">' + (A.rate ? 'best streak ' + plural(st.longest, 'day') : 'needs about 10 readings') + '</div></div>';
     if (A.maintain) {
       t += '<div class="card tile"><div class="k">Goal range</div><div class="v num">' + fw(goal) + '<small>±' + fw(A.maint.band) + '</small></div><div class="n">' + (A.maint.drift !== null ? 'drifting ' + sgn(dsp(A.maint.drift), 2) + ' ' + u + '/wk' : '') + '</div></div>';
     } else {
@@ -640,8 +664,7 @@
     }
     var ents = live().reverse(), shown = ui.showAll ? ents : ents.slice(0, 14);
     h += '<div class="h2">Readings (' + ents.length + ')</div><div class="list">' + shown.map(function (x) {
-      return '<div class="li"><button data-action="edit" data-date="' + x.d + '" style="flex:1;text-align:left;min-height:32px">' + fdate(x.d, true) + '</button><span class="r num">' + fw(x.kg) + ' ' + u + '</span>' +
-        '<button class="chip" data-action="del" data-date="' + x.d + '" aria-label="Delete ' + x.d + '">Delete</button></div>';
+      return '<button class="li" data-action="edit" data-date="' + x.d + '" aria-label="Edit reading from ' + fdate(x.d, true) + '"><span>' + fdate(x.d, true) + '</span><span class="r num">' + fw(x.kg) + ' ' + u + ' &rsaquo;</span></button>';
     }).join('') + '</div>';
     if (ents.length > 14 && !ui.showAll) h += '<div class="row-btns"><button class="btn small" data-action="showall">Show all ' + ents.length + '</button></div>';
     return h;
@@ -722,9 +745,9 @@
 
     // data quality + outliers
     var outs = A.series.filter(function (p) { return p.out; }).slice(-5).reverse();
-    var q = '<div class="card c-12"><h3>Your data</h3><div class="lead num">' + A.realCount + ' readings over ' + A.spanDays + ' days</div>';
+    var q = '<div class="card c-12"><h3>Your data</h3><div class="lead num">' + plural(A.realCount, 'reading') + ' over ' + plural(A.spanDays, 'day') + '</div>';
     var longGaps = A.gaps.filter(function (g) { return g.days >= 2; }).sort(function (a, b) { return b.days - a.days; }).slice(0, 3);
-    q += '<div class="sub">' + (A.estCount ? A.estCount + ' missing days are filled in with a straight line between readings (hollow dots), and they do not count as data. ' : 'No gaps. ') +
+    q += '<div class="sub">' + (A.estCount ? plural(A.estCount, 'missing day') + (A.estCount === 1 ? ' is' : ' are') + ' filled in with a straight line between readings (hollow dots), and they do not count as data. ' : 'No gaps. ') +
       (longGaps.length ? 'Longest gaps: ' + longGaps.map(function (g) { return fdate(g.from) + ' to ' + fdate(g.to); }).join(', ') + '.' : '') + '</div>';
     if (outs.length) q += '<div class="sub" style="margin-top:8px">Unusual readings, well away from the trend (usually water, salt or timing): ' + outs.map(function (p) { return fdate(p.d) + ' (' + sgn(dsp(p.raw - p.trend)) + ')'; }).join(', ') + '.</div>';
     q += '</div>';
@@ -823,15 +846,16 @@
     builders = {};
     v.innerHTML = VIEWS[ui.tab](A);
     $$('.tab[data-tab]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === ui.tab); });
-    markDates(); drawCharts(); C.animateRings(v); updateChip(); updateWhatIf();
+    markDates(); hints(); drawCharts(); C.animateRings(v); updateChip(); updateWhatIf();
     window.scrollTo(0, y); if (c) c.scrollTop = cy;
   }
+  function hints() { $$('#view input[id^="f-"], #view input[id^="y-"]').forEach(function (el) { el.setAttribute('enterkeyhint', 'done'); }); }
   function markDates() { $$('input[type=date]').forEach(function (el) { el.classList.toggle('is-empty', !el.value); }); }
   function updateWhatIf() {
     var el = $('#wi'); if (!el) return;
     var out = $('#wi-out'), rate = fromDsp(parseFloat(el.value)), level = +el.dataset.level, goal = +el.dataset.goal, last = +el.dataset.last;
     var days = (level - goal) / (rate / 7);
-    out.textContent = dsp(rate).toFixed(2) + ' ' + unit() + '/wk reaches goal ' + (days > 730 ? 'in over 2 years' : 'around ' + fdate(S.dayStr(last + Math.ceil(days)), true) + ' (' + Math.ceil(days / 7) + ' weeks)');
+    out.textContent = dsp(rate).toFixed(2) + ' ' + unit() + '/wk reaches goal ' + (days > 730 ? 'in over 2 years' : 'around ' + fdate(S.dayStr(last + Math.ceil(days)), true) + ' (' + plural(Math.ceil(days / 7), 'week') + ')');
   }
 
   /* ---------------------------------------------------------------- events */
@@ -883,6 +907,21 @@
   document.addEventListener('change', function (e) { if (e.target.type === 'date') markDates(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { closeSheet(); return; }
+    if (e.key === 'Tab' && $('#scrim')) {
+      var f = $$('button, input, select, [href]', $('#scrim')).filter(function (x) { return !x.disabled && x.offsetParent !== null; });
+      if (f.length) {
+        var first = f[0], last = f[f.length - 1];
+        if (!$('#scrim').contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+      return;
+    }
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !$('#scrim')) {
+      var iid = e.target.id || '';
+      if (iid.indexOf('f-') === 0) { e.preventDefault(); saveProfile(); return; }
+      if (iid.indexOf('y-') === 0) { e.preventDefault(); saveSyncForm(); return; }
+    }
     var tag = (e.target.tagName || '').toLowerCase();
     if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'select' && tag !== 'textarea' && !$('#scrim')) { e.preventDefault(); openLog(); }
   });
