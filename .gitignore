@@ -1,0 +1,7 @@
+# This repo is public. It must only ever hold code, never your data.
+*.xlsx
+*.xls
+*.csv
+vim-backup*.json
+data.json
+node_modules/
