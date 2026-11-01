@@ -903,7 +903,12 @@
       requestAnimationFrame(function () { pending = false; drawCharts(); });
     };
     if (window.ResizeObserver) new ResizeObserver(onSize).observe(c); else window.addEventListener('resize', onSize);
-    if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !DEMO) navigator.serviceWorker.register('sw.js').catch(function () { /* offline cache is optional */ });
+    if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !DEMO) {
+      var hadSW = !!navigator.serviceWorker.controller, reloaded = false;
+      // when a new version takes over, reload once so you are never stuck on old files
+      navigator.serviceWorker.addEventListener('controllerchange', function () { if (hadSW && !reloaded) { reloaded = true; location.reload(); } });
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (r) { r.update(); }).catch(function () { /* offline cache is optional */ });
+    }
     doSync();
   }
   init();
