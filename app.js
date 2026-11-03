@@ -37,7 +37,7 @@
   /* ---------------------------------------------------------------- store */
   var state = DEMO ? demoState() : loadState();
   var sync = loadSync();
-  var ui = { tab: 'summary', range: '30', fc: true, showAll: false, msg: '', cls: '' };
+  var ui = { ld: null, lend: null, lf: 'all', lshow: 20, tab: 'summary', range: '30', fc: true, showAll: false, msg: '', cls: '' };
   var lastA = null;
 
   function loadState() {
@@ -122,11 +122,12 @@
     clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); toastFn = null; }, label ? 8000 : 2800);
   }
   var lastFocus = null;
-  function openSheet(html, mount) {
+  function openSheet(html, mount, opts) {
+    opts = opts || {};
     closeSheet(); lastFocus = document.activeElement;
     var el = document.createElement('div'); el.className = 'scrim'; el.id = 'scrim';
-    el.innerHTML = '<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>' + html + '</div>';
-    el.addEventListener('click', function (e) { if (e.target === el) closeSheet(); });
+    el.innerHTML = '<div class="sheet' + (opts.full ? ' full' : '') + '" role="dialog" aria-modal="true"><div class="grab"></div>' + html + '</div>';
+    el.addEventListener('click', function (e) { if (e.target === el) { if (opts.onScrim) opts.onScrim(); else closeSheet(); } });
     document.body.appendChild(el);
     var hd = $('h2', el); if (hd) { hd.id = 'sheet-title'; $('.sheet', el).setAttribute('aria-labelledby', 'sheet-title'); }
     document.documentElement.classList.add('sheet-open');
@@ -442,14 +443,16 @@
     var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Weight');
     XLSX.writeFile(wb, 'weight.xlsx');
   }
-  function backup() { DOWNLOAD('vim-backup.json', 'application/json', JSON.stringify({ v: 1, entries: state.entries, settings: state.settings, st: state.st }, null, 1)); }
+  function backup() { DOWNLOAD('vim-backup.json', 'application/json', JSON.stringify({ v: 1, entries: state.entries, settings: state.settings, st: state.st, logs: liveLogs().sort(function (a, b) { return a.date < b.date ? -1 : 1; }) }, null, 1)); }
   function restoreBackup(file) {
     var r = new FileReader();
     r.onload = function () {
       var j, ents;
       try { j = JSON.parse(String(r.result)); if (!j || typeof j.entries !== 'object') throw new Error('bad'); ents = clean(j.entries); } catch (e) { toast('That is not a backup file'); return; }
       var keys = Object.keys(ents).filter(function (k) { return !ents[k].del; });
-      if (!keys.length) { toast('That backup has no readings in it'); return; }
+      var lmap = {}; (Array.isArray(j.logs) ? j.logs : []).forEach(function (e) { if (e && e.id) lmap[e.id] = e; });
+      lmap = cleanLogs(lmap); var lkeys = Object.keys(lmap).filter(function (k) { return !lmap[k].deleted; });
+      if (!keys.length && !lkeys.length) { toast('That backup has no readings in it'); return; }
       // Restoring is an explicit choice, so the backup wins over anything newer here (including an erase).
       var now = Date.now(), added = 0, changed = 0;
       keys.forEach(function (k) {
@@ -458,8 +461,9 @@
         state.entries[k] = { kg: ents[k].kg, t: now };
       });
       if (j.settings) { state.settings = Object.assign({}, DEFAULTS, j.settings); state.st = Math.max(Date.now(), state.st || 0); }
-      persist(); analyze(); render();
-      toast('Restored ' + plural(keys.length, 'reading') + (added || changed ? ' (' + added + ' added, ' + changed + ' changed)' : ''));
+      lkeys.forEach(function (k) { logs.entries[k] = Object.assign({}, lmap[k], { updated: now }); });
+      persist(); if (lkeys.length) persistLogs(); analyze(); render();
+      toast('Restored ' + plural(keys.length, 'reading') + (added || changed ? ' (' + added + ' added, ' + changed + ' changed)' : '') + (lkeys.length ? ' and ' + plural(lkeys.length, 'log') : ''));
     };
     r.readAsText(file);
   }
@@ -571,9 +575,11 @@
       }).then(function (code) {
         if (code === 409 && attempt++ < 2) return step();
         if (code === 409) throw mkErr('Sync conflict, will retry', false);
-        sync.last = Date.now(); saveSync(); retryMs = 0;
-        syncing = false;
-        setStatus('Synced at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 'ok');
+        return syncLogs().then(function () {
+          sync.last = Date.now(); saveSync(); retryMs = 0;
+          syncing = false;
+          setStatus('Synced at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 'ok');
+        });
       });
     };
     return step().catch(function (e) {
@@ -904,7 +910,8 @@
       '<button class="li" data-action="export-csv"><span>Export to CSV</span><span class="r">&rsaquo;</span></button>' +
       '<button class="li" data-action="backup"><span>Backup file (JSON)</span><span class="r">&rsaquo;</span></button>' +
       '<button class="li" data-action="pick-restore"><span>Restore backup</span><span class="r">&rsaquo;</span></button>' +
-      '<button class="li" data-action="erase"><span class="red">Erase all readings</span><span class="r">&rsaquo;</span></button></div>' +
+      '<button class="li" data-action="erase"><span class="red">Erase all readings</span><span class="r">&rsaquo;</span></button>' +
+      '<button class="li" data-action="erase-logs"><span class="red">Erase all logs</span><span class="r">&rsaquo;</span></button></div>' +
       '<div class="note">Import looks for a Date column and a Weight column and merges by date, so you can re-import an updated sheet any time.</div>';
     h += '</div><div class="c-6">';
 
@@ -990,7 +997,360 @@
       .then(function () { if (ui.tab === 'settings') render(); });
   }
 
-  var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, settings: viewSettings };
+  /* ---------------------------------------------------------------- logs tab (moment, evening, weekly) */
+  var LKEY = 'wt.logs', TOMB_DAYS = 90;
+  var FEELS = [['bored', 'Bored'], ['tired', 'Tired'], ['stressed', 'Stressed'], ['lonely', 'Lonely'], ['celebrating', 'Celebrating'], ['other', 'Other']];
+  var FEEL_LABEL = {}; FEELS.forEach(function (p) { FEEL_LABEL[p[0]] = p[1]; });
+  var IC = {
+    clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.6A8 8 0 019.4 4 8 8 0 1020 14.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
+    week: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    cloud: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a4 4 0 01-.6-7.95A6 6 0 0117.8 9.6 4.2 4.2 0 0117 18M12 20v-8M9 14.5l3-3 3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    left: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    right: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    cal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 3v4M16 3v4M4 10h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l1-4L16.5 4.5a2 2 0 013 3L9 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'
+  };
+  var LT = {
+    moment: { title: 'Moment log', icon: IC.clock, mins: '30 sec', one: false },
+    evening: { title: 'Evening log', icon: IC.moon, mins: '2 min', one: true },
+    weekly: { title: 'Weekly review', icon: IC.week, mins: '10 min', one: true }
+  };
+  var logs = DEMO ? { entries: {} } : loadLogs();
+
+  function cleanLogs(entries) {
+    var o = {}, cut = Date.now() - TOMB_DAYS * DAY;
+    Object.keys(entries || {}).forEach(function (k) {
+      var e = entries[k];
+      if (!e || typeof e !== 'object' || !LT[e.type] || !/^\d{4}-\d{2}-\d{2}$/.test(e.date) || e.date < MINDATE || typeof e.id !== 'string' || e.id !== k) return;
+      var upd = +e.updated || +e.created || 0;
+      if (e.deleted) { if (upd < cut) return; o[k] = { id: k, type: e.type, date: e.date, created: +e.created || upd, updated: upd, deleted: true, fields: {} }; return; }
+      o[k] = { id: k, type: e.type, date: e.date, created: +e.created || upd, updated: upd, fields: e.fields && typeof e.fields === 'object' ? e.fields : {} };
+    });
+    return o;
+  }
+  function loadLogs() {
+    try { var j = JSON.parse(localStorage.getItem(LKEY)); if (j && j.entries) return { entries: cleanLogs(j.entries) }; } catch (e) { /* fall through */ }
+    return { entries: {} };
+  }
+  function mergeLogs(a, b) {
+    var out = Object.assign({}, a);
+    Object.keys(b || {}).forEach(function (k) { if (!out[k] || b[k].updated > out[k].updated) out[k] = b[k]; });
+    return out;
+  }
+  function logsCanon(m) { return JSON.stringify(Object.keys(m).sort().map(function (k) { return [k, m[k].updated, !!m[k].deleted, m[k].fields]; })); }
+  function pullLogs() {
+    if (DEMO) return false;
+    try {
+      var j = JSON.parse(localStorage.getItem(LKEY)); if (!j || !j.entries) return false;
+      var before = logsCanon(logs.entries);
+      logs.entries = cleanLogs(mergeLogs(logs.entries, cleanLogs(j.entries)));
+      return logsCanon(logs.entries) !== before;
+    } catch (e) { return false; }
+  }
+  function persistLogs(sched) {
+    if (DEMO) return;
+    pullLogs();
+    try { localStorage.setItem(LKEY, JSON.stringify({ entries: logs.entries })); } catch (e) { toast('Could not save in this browser'); }
+    if (sched !== false) scheduleSync();
+  }
+  function liveLogs() { return Object.keys(logs.entries).map(function (k) { return logs.entries[k]; }).filter(function (e) { return !e.deleted; }); }
+  function logsOn(date) { return liveLogs().filter(function (e) { return e.date === date; }).sort(sortWithinDay); }
+  function sortWithinDay(a, b) {
+    var ra = { weekly: 0, evening: 1, moment: 2 }, d = ra[a.type] - ra[b.type]; if (d) return d;
+    if (a.type === 'moment') { var ta = a.fields.time || '', tb = b.fields.time || ''; if (ta !== tb) return ta < tb ? -1 : 1; }
+    return a.created - b.created;
+  }
+  function findOne(type, date) { return liveLogs().filter(function (e) { return e.type === type && e.date === date; })[0] || null; }
+  function newId() { return 'log_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+  function tombstone(e) { return { id: e.id, type: e.type, date: e.date, created: e.created, updated: Date.now(), deleted: true, fields: {} }; }
+
+  function fdow(d, year) { return new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: year ? 'numeric' : undefined, timeZone: 'UTC' }); }
+  function fmtTime(t) { var m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); if (!m) return ''; var h = +m[1]; return ((h % 12) || 12) + ':' + m[2] + ' ' + (h < 12 ? 'AM' : 'PM'); }
+  function nowHHMM() { var d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
+  function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+  function summary(e) {
+    var f = e.fields || {}, p = [];
+    if (e.type === 'moment') {
+      if (f.time) p.push(fmtTime(f.time));
+      if (f.place) p.push(f.place);
+      if (f.felt) p.push(FEEL_LABEL[f.felt] || f.felt);
+      if (f.bodyCheck) p.push('Body check ' + f.bodyCheck);
+      if (p.length < 2 && f.did) p.push(f.did);
+    } else if (e.type === 'evening') {
+      if (f.newThing) p.push('New today: ' + f.newThing);
+      else if (f.ifThen && (f.ifThen.if || f.ifThen.then)) p.push('If ' + (f.ifThen.if || '...') + ', I will ' + (f.ifThen.then || '...'));
+      else if (f.wentWell) p.push('Went well: ' + f.wentWell);
+    } else {
+      if (f.triggers && f.triggers.length) p.push(f.triggers.map(function (t) { return FEEL_LABEL[t] || t; }).join(', '));
+      if (f.change) p.push('Change: ' + f.change);
+      else if (f.worked) p.push('Worked: ' + f.worked);
+    }
+    return clip(p.join(' · '), 90);
+  }
+  function rowHtml(e) {
+    var m = LT[e.type];
+    return '<button class="li lg-row" data-action="lg-open" data-id="' + esc(e.id) + '"><span class="lg-tile t-' + e.type + '">' + m.icon + '</span>' +
+      '<span class="lg-txt"><b>' + m.title + '</b><span class="lg-sum">' + esc(summary(e)) + '</span></span><span class="r lg-chev">' + IC.chev + '</span></button>';
+  }
+  function logsPending() { var last = sync.logsLast || 0; return Object.keys(logs.entries).filter(function (k) { return logs.entries[k].updated > last; }).length; }
+  function lastLogsSynced() { return sync.logsLast ? new Date(sync.logsLast).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+
+  function viewLogs() {
+    var today = S.localToday(), sel = ui.ld && ui.ld <= today && ui.ld >= MINDATE ? ui.ld : today; ui.ld = sel;
+    var tn = S.dayNum(today), en = ui.lend ? S.dayNum(ui.lend) : tn;
+    if (en > tn) en = tn;
+    if (en < S.dayNum(MINDATE) + 6) en = S.dayNum(MINDATE) + 6;
+    ui.lend = S.dayStr(en);
+    var days = '', i, has = {};
+    liveLogs().forEach(function (e) { has[e.date] = true; });
+    for (i = 0; i < 7; i++) {
+      var n = en - 6 + i, ds = S.dayStr(n), on = ds === sel;
+      days += '<button class="lg-day' + (on ? ' on' : '') + '" data-action="lg-day" data-d="' + ds + '" aria-pressed="' + on + '" aria-label="' + fdow(ds, true) + (has[ds] ? ', has logs' : '') + '">' +
+        '<span class="lg-dw">' + new Date(ds + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }) + '</span><span class="lg-dn num">' + (+ds.slice(8)) + '</span><i class="lg-dot' + (has[ds] ? '' : ' no') + '"></i></button>';
+    }
+    var d = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    var sub = sync.on ? (sync.logsLast ? 'Last synced to vim-data: ' + lastLogsSynced() : 'Not synced to vim-data yet.') : 'Sync is off. Logs stay on this device.';
+    var h = '<div class="head"><div><div class="date">' + d + '</div><h1>Logs</h1></div><button class="btn small lg-syncbtn" data-action="lg-sync">' + IC.cloud + '<span>Sync</span></button></div>' +
+      (DEMO ? '<div class="warn" style="margin-bottom:14px">Demo mode. Logs are not saved.</div>' : '') +
+      '<div class="sub lg-synced">' + esc(sub) + '</div>';
+
+    var left = '<div class="card"><div class="lg-bar"><div class="lg-range num">' + fdate(S.dayStr(en - 6)) + ' to ' + fdate(S.dayStr(en)) + '</div><div class="lg-nav">' +
+      '<button class="iconbtn" data-action="lg-prev" aria-label="Previous week">' + IC.left + '</button>' +
+      (en < tn ? '<button class="iconbtn" data-action="lg-next" aria-label="Next week">' + IC.right + '</button>' : '') +
+      '<span class="lg-calwrap"><button class="iconbtn" data-action="lg-cal" aria-label="Pick a date">' + IC.cal + '</button><input type="date" id="lg-date" class="ghost-date" min="' + MINDATE + '" max="' + today + '" value="' + sel + '" tabindex="-1" aria-hidden="true"></span></div></div>' +
+      '<div class="lg-strip">' + days + '</div></div>';
+
+    var add = '<div class="card"><h3>Add a log for ' + fdow(sel) + '</h3><div class="lg-add">';
+    ['moment', 'evening', 'weekly'].forEach(function (t) {
+      var ex = LT[t].one ? findOne(t, sel) : null;
+      add += '<button class="lg-addbtn" data-action="lg-add" data-type="' + t + '"><span class="lg-addtop"><span class="lg-tile t-' + t + '">' + LT[t].icon + '</span><span class="lg-plus">' + (ex ? IC.edit : IC.plus) + '</span></span>' +
+        '<span class="lg-addname">' + LT[t].title + '</span><span class="lg-addmin">' + (ex ? 'Logged. Tap to edit' : LT[t].mins) + '</span></button>';
+    });
+    add += '</div>';
+    var todays = logsOn(sel);
+    add += '<h3 style="margin-top:18px">Logged on ' + fdow(sel) + '</h3>' + (todays.length ? '<div class="list">' + todays.map(rowHtml).join('') + '</div>' : '<div class="sub" style="margin-top:6px">Nothing logged for this date yet.</div>') + '</div>';
+
+    var past = liveLogs().filter(function (e) { return e.date < sel && (ui.lf === 'all' || !ui.lf || e.type === ui.lf); })
+      .sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : -sortWithinDay(a, b); });
+    var chips = [['all', 'All'], ['moment', 'Moment'], ['evening', 'Evening'], ['weekly', 'Weekly']].map(function (c) {
+      var on = (ui.lf || 'all') === c[0];
+      return '<button class="chip pick' + (on ? ' on' : '') + ' nock" data-action="lg-filter" data-f="' + c[0] + '" aria-pressed="' + on + '">' + c[1] + '</button>';
+    }).join('');
+    var shown = past.slice(0, ui.lshow || 20), pastHtml = '', cur = '';
+    shown.forEach(function (e) {
+      if (e.date !== cur) { if (cur) pastHtml += '</div>'; cur = e.date; pastHtml += '<div class="lg-dayh">' + fdow(e.date) + '</div><div class="list">'; }
+      pastHtml += rowHtml(e);
+    });
+    if (cur) pastHtml += '</div>';
+    var pc = '<div class="card"><h3>Past logs</h3><div class="chips lg-filters">' + chips + '</div>' +
+      (past.length ? pastHtml + (past.length > shown.length ? '<div class="row-btns"><button class="btn small" data-action="lg-more">Show more</button></div>' : '')
+        : '<div class="sub" style="margin-top:10px">' + (liveLogs().length ? 'No earlier logs match.' : 'Your logs will show up here.') + '</div>') + '</div>';
+
+    return h + '<div class="grid top"><div class="c-7 lg-col">' + left + add + '</div><div class="c-5">' + pc + '</div></div>';
+  }
+
+  function weekCounts(endDate) {
+    var en = S.dayNum(endDate), c = {};
+    liveLogs().forEach(function (e) {
+      if (e.type !== 'moment' || !e.fields.felt) return;
+      var n = S.dayNum(e.date); if (n >= en - 6 && n <= en) c[e.fields.felt] = (c[e.fields.felt] || 0) + 1;
+    });
+    return c;
+  }
+  function lgTextField(id, label, val, o) {
+    o = o || {};
+    return '<div class="lg-f"><label for="' + id + '">' + label + '</label>' + (o.hint ? '<div class="lg-hint">' + o.hint + '</div>' : '') +
+      (o.area ? '<textarea id="' + id + '" class="lg-in" rows="' + (o.rows || 2) + '" maxlength="500" placeholder="' + esc(o.ph || '') + '">' + esc(val || '') + '</textarea>'
+        : '<input id="' + id + '" class="lg-in" maxlength="200" autocomplete="off" value="' + esc(val || '') + '" placeholder="' + esc(o.ph || '') + '">') + '</div>';
+  }
+  function lgChips(id, sel, counts, multi) {
+    return '<div class="chips lg-pickrow" id="' + id + '" data-multi="' + (multi ? 1 : 0) + '">' + FEELS.map(function (p) {
+      var on = sel.indexOf(p[0]) >= 0, n = counts && counts[p[0]];
+      return '<button type="button" class="chip pick' + (on ? ' on' : '') + '" data-v="' + p[0] + '" aria-pressed="' + on + '">' + p[1] + (n ? ' <small class="num">' + n + '</small>' : '') + '</button>';
+    }).join('') + '</div>';
+  }
+  function lgClean(f) {
+    var o = {}; Object.keys(f).forEach(function (k) {
+      var v = f[k];
+      if (v === '' || v === null || v === undefined) return;
+      if (Array.isArray(v)) { if (v.length) o[k] = v; return; }
+      if (typeof v === 'object') { var s = lgClean(v); if (Object.keys(s).length) o[k] = s; return; }
+      o[k] = v;
+    });
+    return o;
+  }
+  function lgHasContent(type, f) {
+    var g = Object.assign({}, f); if (type === 'moment') delete g.time;
+    return Object.keys(lgClean(g)).length > 0;
+  }
+
+  function openLogEditor(type, date, id) {
+    var ex = id ? logs.entries[id] : null; if (ex && ex.deleted) ex = null;
+    var meta = LT[type], f = ex ? ex.fields : {}, cur = ex ? ex.date : date, today = S.localToday(), dirty = false, prefilled = false;
+    var counts = type === 'weekly' ? weekCounts(cur) : null, trigSel = f.triggers || [];
+    if (type === 'weekly' && !ex) {
+      trigSel = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; }).slice(0, 3); prefilled = trigSel.length > 0;
+    }
+    var body = '';
+    if (type === 'moment') {
+      var bc = f.bodyCheck || 0, tm = ex ? (f.time || '') : (cur === today ? nowHHMM() : '');
+      body += '<div class="lg-two"><div class="lg-f"><label for="lg-time">Time</label><input id="lg-time" type="time" class="lg-in" value="' + esc(tm) + '"></div>' +
+        '<div class="lg-f"><label for="lg-place">Place</label><input id="lg-place" class="lg-in" maxlength="120" autocomplete="off" placeholder="Kitchen" value="' + esc(f.place || '') + '"></div></div>' +
+        '<div class="lg-f"><label id="lg-bc-l">Body check</label><div class="lg-hint">Is your stomach hungry, or does your mouth just want something?</div>' +
+        '<div class="lg-seg5" role="group" aria-labelledby="lg-bc-l">' + [1, 2, 3, 4, 5].map(function (n) { return '<button type="button" data-v="' + n + '" class="' + (bc === n ? 'on' : '') + '" aria-pressed="' + (bc === n) + '">' + n + '</button>'; }).join('') + '</div>' +
+        '<div class="lg-ends"><span>1 = not at all</span><span>5 = very hungry</span></div></div>' +
+        '<div class="lg-f"><label>What I felt just before</label>' + lgChips('lg-felt', f.felt ? [f.felt] : [], null, false) + '</div>' +
+        lgTextField('lg-did', 'What I did', f.did, { area: true, ph: 'What happened next' }) + lgTextField('lg-try', 'What I\'ll try next time', f.tryNext, { ph: 'One small thing' });
+    } else if (type === 'evening') {
+      var it = f.ifThen || {};
+      body += '<div class="lg-note">One per day. About 2 minutes.</div>' + lgTextField('lg-new', 'One new thing I added today', f.newThing, { hint: 'A food, recipe, or ingredient.' }) +
+        '<div class="lg-f lg-ifthen"><label>Tomorrow\'s if-then rule</label><div class="lg-pair"><span>If</span><input id="lg-if" class="lg-in" maxlength="200" autocomplete="off" placeholder="I get home hungry" value="' + esc(it.if || '') + '" aria-label="If this happens"></div>' +
+        '<div class="lg-pair"><span>I will, first</span><input id="lg-then" class="lg-in" maxlength="200" autocomplete="off" placeholder="Drink water and sit down" value="' + esc(it.then || '') + '" aria-label="I will do this first"></div></div>' +
+        lgTextField('lg-well', 'One thing that went well', f.wentWell);
+    } else {
+      body += '<div class="lg-note" id="lg-cover"></div><div class="lg-f"><label>Triggers that showed up most</label><div class="lg-hint" id="lg-trighint"></div><div id="lg-trig">' + lgChips('lg-felt', trigSel, counts, true) + '</div></div>' +
+        lgTextField('lg-tnote', 'Anything else that set it off', f.triggersNote, { ph: 'Optional' }) +
+        lgTextField('lg-worked', 'What worked', f.worked, { area: true }) + lgTextField('lg-didnt', 'What didn\'t', f.didnt, { area: true }) +
+        lgTextField('lg-change', 'One change for next week', f.change) + lgTextField('lg-tryfood', 'One new food or recipe to try', f.tryFood);
+    }
+    var dlabel = type === 'weekly' ? 'Week ending' : '';
+    openSheet(
+      '<div class="lg-top"><button class="iconbtn" id="lg-back" aria-label="Back">' + IC.left + '</button><h2>' + meta.title + '</h2></div>' +
+      '<div class="lg-discard hide" id="lg-discard"><span>Discard what you typed?</span><span><button class="btn small danger" id="lg-drop">Discard</button> <button class="btn small" id="lg-keep">Keep editing</button></span></div>' +
+      '<div class="lg-datebar"><span id="lg-dl"></span><span class="lg-calwrap"><button type="button" class="lg-change" id="lg-chdate">Change</button><input type="date" id="lg-d" class="ghost-date" min="' + MINDATE + '" max="' + today + '" value="' + cur + '" tabindex="-1" aria-hidden="true"></span></div>' +
+      body + '<div class="ferr hide" id="lg-err"></div>' +
+      '<div class="lg-savebar"><button class="btn primary block" id="lg-save">' + (ex ? 'Update' : 'Save') + ' ' + meta.title.toLowerCase() + '</button>' + (ex ? '<button class="btn danger block" id="lg-del" style="margin-top:10px">Delete this log</button>' : '') + '</div>',
+      function (el) {
+        var err = $('#lg-err', el);
+        function setDate() {
+          $('#lg-dl', el).textContent = (dlabel ? dlabel + ' ' : '') + fdow(cur, true);
+          if (type === 'weekly') {
+            $('#lg-cover', el).textContent = 'Covers ' + fdate(S.dayStr(S.dayNum(cur) - 6)) + ' to ' + fdate(cur) + '. One per week. About 10 minutes.';
+          }
+        }
+        function hint() {
+          if (type !== 'weekly') return;
+          var h = $('#lg-trighint', el), any = Object.keys(counts).length;
+          h.textContent = any ? 'The small number is how often it showed up in your moment logs this week.' + (prefilled ? ' The top ones are picked for you. Change freely.' : '') : 'No moment logs with a feeling this week.';
+        }
+        setDate(); hint();
+        el.addEventListener('input', function () { dirty = true; });
+        el.addEventListener('click', function (e) {
+          var pk = e.target.closest('.pick'), sg = e.target.closest('.lg-seg5 button');
+          if (pk && el.contains(pk)) {
+            dirty = true; var row = pk.parentNode, multi = row.getAttribute('data-multi') === '1', was = pk.classList.contains('on');
+            if (!multi) $$('.pick', row).forEach(function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+            pk.classList.toggle('on', !was); pk.setAttribute('aria-pressed', String(!was));
+          } else if (sg) {
+            dirty = true; var was2 = sg.classList.contains('on');
+            $$('.lg-seg5 button', el).forEach(function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+            sg.classList.toggle('on', !was2); sg.setAttribute('aria-pressed', String(!was2));
+          }
+        });
+        $('#lg-chdate', el).addEventListener('click', function () { var i = $('#lg-d', el); try { i.showPicker(); } catch (e) { i.focus(); i.click(); } });
+        $('#lg-d', el).addEventListener('change', function (e) {
+          var v = e.target.value; if (!v || v > today || v < MINDATE) { e.target.value = cur; return; }
+          cur = v; dirty = true; setDate();
+          if (type === 'weekly') {
+            var keep = $$('#lg-trig .pick.on', el).map(function (b) { return b.dataset.v; }); counts = weekCounts(cur); prefilled = false;
+            $('#lg-trig', el).innerHTML = lgChips('lg-felt', keep, counts, true); hint();
+          }
+        });
+        function back() { if (!dirty) { closeSheet(); return; } $('#lg-discard', el).classList.remove('hide'); $('#lg-drop', el).focus(); }
+        $('#lg-back', el).addEventListener('click', back);
+        $('#lg-drop', el).addEventListener('click', closeSheet);
+        $('#lg-keep', el).addEventListener('click', function () { $('#lg-discard', el).classList.add('hide'); });
+        function g(i) { var x = $('#' + i, el); return x ? x.value.trim() : ''; }
+        function picked() { return $$('#lg-felt .pick.on', el).map(function (b) { return b.dataset.v; }); }
+        function collect() {
+          if (type === 'moment') { var b = $('.lg-seg5 button.on', el); return { time: g('lg-time'), place: g('lg-place'), bodyCheck: b ? +b.dataset.v : null, felt: picked()[0] || '', did: g('lg-did'), tryNext: g('lg-try') }; }
+          if (type === 'evening') return { newThing: g('lg-new'), ifThen: { if: g('lg-if'), then: g('lg-then') }, wentWell: g('lg-well') };
+          return { triggers: picked(), triggersNote: g('lg-tnote'), worked: g('lg-worked'), didnt: g('lg-didnt'), change: g('lg-change'), tryFood: g('lg-tryfood') };
+        }
+        function fail(m) { err.textContent = m; err.classList.remove('hide'); err.scrollIntoView({ block: 'nearest' }); }
+        $('#lg-save', el).addEventListener('click', function () {
+          var raw = collect();
+          if (!lgHasContent(type, raw)) { fail('Fill in at least one field.'); return; }
+          if (cur > today || cur < MINDATE) { fail('Pick a date between 2000 and today.'); return; }
+          var dup = meta.one ? findOne(type, cur) : null;
+          if (dup && (!ex || dup.id !== ex.id)) { fail('There is already ' + (type === 'weekly' ? 'a weekly review for that week ending' : 'an evening log for') + ' ' + fdow(cur) + '. Close this and open it from the list.'); return; }
+          var now = Date.now(), fields = lgClean(raw), prev = ex ? JSON.parse(JSON.stringify(ex)) : null;
+          var entry = ex ? Object.assign({}, ex, { date: cur, fields: fields, updated: now }) : { id: newId(), type: type, date: cur, created: now, updated: now, fields: fields };
+          logs.entries[entry.id] = entry; persistLogs(); ui.ld = cur; closeSheet(); render();
+          toast(meta.title + (ex ? ' updated' : ' saved'), 'Undo', function () {
+            logs.entries[entry.id] = prev ? Object.assign({}, prev, { updated: Date.now() }) : tombstone(entry); persistLogs(); render();
+          });
+          if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e2) { /* ignore */ } }
+        });
+        var del = $('#lg-del', el);
+        if (del) del.addEventListener('click', function () {
+          var prev = JSON.parse(JSON.stringify(ex)); logs.entries[ex.id] = tombstone(ex); persistLogs(); closeSheet(); render();
+          toast('Deleted ' + meta.title.toLowerCase(), 'Undo', function () { logs.entries[prev.id] = Object.assign({}, prev, { updated: Date.now() }); persistLogs(); render(); });
+        });
+        if (!ex) { var first = $('.lg-in, .pick', el); if (first && type !== 'moment') first.focus({ preventScroll: true }); }
+      }, { full: true, onScrim: function () { var b = $('#lg-back'); if (b) b.click(); } });
+  }
+
+  // logs.json lives next to the weights file in the same private repo
+  function logsPath() { return (sync.path || 'data.json').replace(/[^\/]*$/, '') + 'logs.json'; }
+  function logsUrl() { return 'https://api.github.com/repos/' + encodeURIComponent(sync.owner) + '/' + encodeURIComponent(sync.repo) + '/contents/' + logsPath().split('/').map(encodeURIComponent).join('/'); }
+  function ghGetLogs() {
+    return fetch(logsUrl(), { headers: ghHeaders(), cache: 'no-store' }).then(function (r) {
+      if (r.status === 404) return { list: [], sha: null };
+      if (!r.ok) throw ghErr(r);
+      return r.json().then(function (j) {
+        if (Array.isArray(j)) throw mkErr('logs.json is a folder in your repo. Rename or remove it.', true);
+        var textP = j.content && j.encoding !== 'none' ? Promise.resolve(b64dec(j.content)) :
+          (j.size > 0 ? fetch(logsUrl(), { headers: Object.assign({}, ghHeaders(), { 'Accept': 'application/vnd.github.raw+json' }), cache: 'no-store' }).then(function (rr) { if (!rr.ok) throw ghErr(rr); return rr.text(); }) : Promise.resolve(''));
+        return textP.then(function (text) {
+          var list = [];
+          if (text.trim()) {
+            try { list = JSON.parse(text); } catch (e) { throw mkErr('logs.json in your repo is not valid. Open it on GitHub and fix or delete it, then sync again.', true); }
+            if (!Array.isArray(list)) throw mkErr('logs.json in your repo does not look like Vim logs. Rename or delete it.', true);
+          }
+          return { list: list, sha: j.sha };
+        });
+      });
+    });
+  }
+  function logsToList(m) {
+    return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.created - b.created; });
+  }
+  function ghPutLogs(sha, list) {
+    var body = { message: 'logs ' + new Date().toISOString(), content: b64enc(JSON.stringify(list, null, 1)) };
+    if (sha) body.sha = sha;
+    return fetch(logsUrl(), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, ghHeaders()), body: JSON.stringify(body) }).then(function (r) {
+      if (r.status === 409 || r.status === 422) return 409;
+      if (!r.ok) throw ghErr(r);
+      return 200;
+    });
+  }
+  // Merge by id (newest edit wins), then write the file so it matches the app. Two devices never overwrite each other.
+  function syncLogs() {
+    if (DEMO) return Promise.resolve();
+    var attempt = 0;
+    var step = function () {
+      return ghGetLogs().then(function (r) {
+        var remote = {}; (r.list || []).forEach(function (e) { if (e && e.id) remote[e.id] = e; });
+        remote = cleanLogs(remote);
+        var before = logsCanon(logs.entries);
+        logs.entries = cleanLogs(mergeLogs(logs.entries, remote));
+        if (logsCanon(logs.entries) !== before) { persistLogs(false); if (ui.tab === 'logs' && !$('#scrim')) render(); }
+        if (logsCanon(remote) === logsCanon(logs.entries) && (r.sha || !Object.keys(logs.entries).length)) return 200;
+        return ghPutLogs(r.sha, logsToList(logs.entries));
+      }).then(function (code) {
+        if (code === 409 && attempt++ < 2) return step();
+        if (code === 409) throw mkErr('Sync conflict, will retry', false);
+        sync.logsLast = Date.now(); saveSync();
+      });
+    };
+    return step();
+  }
+  var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, logs: viewLogs, settings: viewSettings };
 
   function render() {
     var A = lastA || analyze(), v = $('#view'), c = $('#content');
@@ -1011,7 +1371,7 @@
   }
 
   /* ---------------------------------------------------------------- events */
-  function goTab(t) { ui.tab = t; ui.showAll = false; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
+  function goTab(t) { ui.tab = t; ui.showAll = false; ui.lshow = 20; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
   document.addEventListener('click', function (e) {
     var tb = e.target.closest('[data-toast]'); if (tb) { var fn = toastFn; $('#toast').classList.remove('show'); toastFn = null; if (fn) fn(); return; }
     var tp = e.target.closest('[data-theme-pick]'); if (tp) { applyTheme(tp.dataset.themePick); render(); return; }
@@ -1043,6 +1403,32 @@
         });
       });
     }
+    else if (a === 'lg-day') { ui.ld = t.dataset.d; render(); }
+    else if (a === 'lg-prev') { ui.lend = S.dayStr(S.dayNum(ui.lend || S.localToday()) - 7); render(); }
+    else if (a === 'lg-next') { var tn2 = S.dayNum(S.localToday()); ui.lend = S.dayStr(Math.min(tn2, S.dayNum(ui.lend || S.localToday()) + 7)); render(); }
+    else if (a === 'lg-cal') { var gi = $('#lg-date'); if (gi) { try { gi.showPicker(); } catch (e3) { gi.focus(); gi.click(); } } }
+    else if (a === 'lg-add') { var ty = t.dataset.type, dd = ui.ld || S.localToday(), exl = LT[ty].one ? findOne(ty, dd) : null; openLogEditor(ty, dd, exl ? exl.id : null); }
+    else if (a === 'lg-open') { var le = logs.entries[t.dataset.id]; if (le && !le.deleted) openLogEditor(le.type, le.date, le.id); }
+    else if (a === 'lg-filter') { ui.lf = t.dataset.f; ui.lshow = 20; render(); }
+    else if (a === 'lg-more') { ui.lshow = (ui.lshow || 20) + 20; render(); }
+    else if (a === 'lg-sync') {
+      if (!sync.on) { toast('Sync is off. Connect it in Settings.', 'Open', function () { goTab('settings'); }); return; }
+      var sl = $('span', t); if (sl) sl.textContent = 'Syncing...'; t.disabled = true;
+      doSync().then(function () {
+        if (ui.tab === 'logs' && !$('#scrim')) render();
+        toast(ui.cls === 'bad' ? ui.msg : 'Synced');
+      });
+    }
+    else if (a === 'erase-logs') {
+      openSheet('<h2>Erase all logs?</h2><div class="sub">This clears every moment log, evening log and weekly review on this device. The next sync clears them in your repo too. Older versions stay in the private repo git history until you delete the repo.</div>' +
+        '<div class="row-btns"><button class="btn danger" id="elog-go">Erase all logs</button><button class="btn" id="elog-no">Cancel</button></div>', function (el) {
+        $('#elog-no', el).addEventListener('click', closeSheet);
+        $('#elog-go', el).addEventListener('click', function () {
+          Object.keys(logs.entries).forEach(function (k) { logs.entries[k] = tombstone(logs.entries[k]); });
+          persistLogs(); closeSheet(); render(); toast('All logs erased');
+        });
+      });
+    }
     else if (a === 'sync-on') saveSyncForm();
     else if (a === 'sync-off') { sync.on = false; sync.token = ''; saveSync(); setStatus('Disconnected. Local data kept.'); render(); }
   });
@@ -1063,10 +1449,16 @@
   });
   document.addEventListener('input', function (e) { if (e.target.id === 'wi') updateWhatIf(); if (e.target.type === 'date') markDates(); });
   document.addEventListener('change', function (e) { if (e.target.type === 'date') markDates(); });
+  document.addEventListener('change', function (e) {
+    if (e.target.id !== 'lg-date') return;
+    var v = e.target.value, today = S.localToday();
+    if (!v || v > today || v < MINDATE) return;
+    ui.ld = v; ui.lend = S.dayStr(Math.min(S.dayNum(today), S.dayNum(v) + 3)); render();
+  });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { closeSheet(); return; }
+    if (e.key === 'Escape') { var gb = $('#scrim .sheet.full #lg-back'); if (gb) gb.click(); else closeSheet(); return; }
     if (e.key === 'Tab' && $('#scrim')) {
-      var f = $$('button, input, select, [href]', $('#scrim')).filter(function (x) { return !x.disabled && x.offsetParent !== null; });
+      var f = $$('button, input, select, textarea, [href]', $('#scrim')).filter(function (x) { return !x.disabled && x.offsetParent !== null; });
       if (f.length) {
         var first = f[0], last = f[f.length - 1];
         if (!$('#scrim').contains(document.activeElement)) { e.preventDefault(); first.focus(); }
@@ -1083,8 +1475,9 @@
     var tag = (e.target.tagName || '').toLowerCase();
     if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'select' && tag !== 'textarea' && !$('#scrim')) { e.preventDefault(); openLog(); }
   });
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) { pull(); analyze(); render(); doSync(); } });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { pull(); pullLogs(); analyze(); render(); doSync(); } });
   window.addEventListener('storage', function (e) {
+    if (e.key === LKEY) { if (pullLogs() && ui.tab === 'logs' && !$('#scrim')) render(); return; }
     if (e.key !== KEY || !pull()) return;
     analyze();
     var ae = document.activeElement;

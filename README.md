@@ -74,6 +74,13 @@ Pages redeploys in about a minute. Hard refresh once (or close and reopen the in
 - Want to keep using Excel? Re-import the sheet any time. It merges by date.
 - **Export to Excel** gives you a fresh `.xlsx` from the app.
 
+## Logs tab
+- Three short journals for the days food noise hits: **Moment log** (30 seconds, any number per day), **Evening log** (2 minutes, one per day) and **Weekly review** (10 minutes, one per week, dated by the week's last day).
+- Pick a date once at the top. Everything you add goes on that date. Tap a saved log to edit or delete it.
+- The weekly review pre-selects the triggers that came up most in that week's moment logs. Change them freely.
+- Logs are stored on this device and, once sync is connected, in `logs.json` next to `data.json` in the same private repo. Each sync merges with the file first, so two devices never overwrite each other.
+- Settings > Erase all logs clears them. Backup files include logs.
+
 ## What the numbers mean
 
 - **Trend weight**: Kalman filter estimate of true weight. Daily readings swing 1 to 2 kg from water.
@@ -96,6 +103,6 @@ Open the app with `#demo` on the end of the URL. Nothing is saved in that mode.
 - `model.js`: Kalman filter, forecast, simulation, back-test (runs in Node too)
 - `stats.js`: turns readings into everything the screens show (runs in Node too)
 - `charts.js`: charts and rings
-- `app.js`: storage, import/export, sync, screens
+- `app.js`: storage, import/export, sync, screens (including the Logs tab)
 - `lib/xlsx.full.min.js`: SheetJS 0.18.5, bundled so no third-party script loads
 - `sw.js`, `manifest.webmanifest`, `icons/`: offline and home screen install
