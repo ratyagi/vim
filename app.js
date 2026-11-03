@@ -920,7 +920,7 @@
       return '<button class="theme-opt' + (k === theme ? ' on' : '') + '" data-theme-pick="' + k + '" aria-pressed="' + (k === theme) + '"><span class="sw">' + T.swatch.map(function (c) { return '<i style="background:' + c + '"></i>'; }).join('') + '</span>' + T.name + '</button>';
     }).join('') + '</div>';
 
-    h += '<div class="h2">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your data in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing.</div>' +
+    h += '<div class="h2">Private sync</div><div class="note" style="margin-top:0">Optional. Keeps a copy of your weights (<b>data.json</b>) and your logs (<b>logs.json</b>) in a <b>private</b> GitHub repo so your phone and laptop match, with no daily committing.</div>' +
       '<div class="list">' +
       '<div class="li"><label for="y-o">GitHub username</label><input id="y-o" name="vim-gh-user" class="w3" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="your-name" value="' + esc(sync.owner) + '"></div>' +
       '<div class="li"><label for="y-r">Private repo</label><input id="y-r" name="vim-gh-repo" class="w3" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="vim-data" value="' + esc(sync.repo) + '"></div>' +
@@ -1096,8 +1096,6 @@
     return '<button class="li lg-row" data-action="lg-open" data-id="' + esc(e.id) + '"><span class="lg-tile t-' + e.type + '">' + m.icon + '</span>' +
       '<span class="lg-txt"><b>' + m.title + '</b><span class="lg-sum">' + esc(summary(e)) + '</span></span><span class="r lg-chev">' + IC.chev + '</span></button>';
   }
-  function logsPending() { var last = sync.logsLast || 0; return Object.keys(logs.entries).filter(function (k) { return logs.entries[k].updated > last; }).length; }
-  function lastLogsSynced() { return sync.logsLast ? new Date(sync.logsLast).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
 
   function viewLogs() {
     var today = S.localToday(), sel = ui.ld && ui.ld <= today && ui.ld >= MINDATE ? ui.ld : today; ui.ld = sel;
@@ -1112,11 +1110,7 @@
       days += '<button class="lg-day' + (on ? ' on' : '') + '" data-action="lg-day" data-d="' + ds + '" aria-pressed="' + on + '" aria-label="' + fdow(ds, true) + (has[ds] ? ', has logs' : '') + '">' +
         '<span class="lg-dw">' + new Date(ds + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }) + '</span><span class="lg-dn num">' + (+ds.slice(8)) + '</span><i class="lg-dot' + (has[ds] ? '' : ' no') + '"></i></button>';
     }
-    var d = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-    var sub = sync.on ? (sync.logsLast ? 'Last synced to vim-data: ' + lastLogsSynced() : 'Not synced to vim-data yet.') : 'Sync is off. Logs stay on this device.';
-    var h = '<div class="head"><div><div class="date">' + d + '</div><h1>Logs</h1></div><button class="btn small lg-syncbtn" data-action="lg-sync">' + IC.cloud + '<span>Sync</span></button></div>' +
-      (DEMO ? '<div class="warn" style="margin-bottom:14px">Demo mode. Logs are not saved.</div>' : '') +
-      '<div class="sub lg-synced">' + esc(sub) + '</div>';
+    var h = header('Logs');
 
     var left = '<div class="card"><div class="lg-bar"><div class="lg-range num">' + fdate(S.dayStr(en - 6)) + ' to ' + fdate(S.dayStr(en)) + '</div><div class="lg-nav">' +
       '<button class="iconbtn" data-action="lg-prev" aria-label="Previous week">' + IC.left + '</button>' +
@@ -1411,14 +1405,6 @@
     else if (a === 'lg-open') { var le = logs.entries[t.dataset.id]; if (le && !le.deleted) openLogEditor(le.type, le.date, le.id); }
     else if (a === 'lg-filter') { ui.lf = t.dataset.f; ui.lshow = 20; render(); }
     else if (a === 'lg-more') { ui.lshow = (ui.lshow || 20) + 20; render(); }
-    else if (a === 'lg-sync') {
-      if (!sync.on) { toast('Sync is off. Connect it in Settings.', 'Open', function () { goTab('settings'); }); return; }
-      var sl = $('span', t); if (sl) sl.textContent = 'Syncing...'; t.disabled = true;
-      doSync().then(function () {
-        if (ui.tab === 'logs' && !$('#scrim')) render();
-        toast(ui.cls === 'bad' ? ui.msg : 'Synced');
-      });
-    }
     else if (a === 'erase-logs') {
       openSheet('<h2>Erase all logs?</h2><div class="sub">This clears every moment log, evening log and weekly review on this device. The next sync clears them in your repo too. Older versions stay in the private repo git history until you delete the repo.</div>' +
         '<div class="row-btns"><button class="btn danger" id="elog-go">Erase all logs</button><button class="btn" id="elog-no">Cancel</button></div>', function (el) {

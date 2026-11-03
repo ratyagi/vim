@@ -295,7 +295,6 @@ button.li { min-height: 52px; }
 /* ------------------------------------------------------------ logs tab */
 .iconbtn { width: 40px; height: 40px; border-radius: 50%; background: var(--card2); display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--text); }
 .iconbtn:hover { background: var(--card3); } .iconbtn svg { width: 20px; height: 20px; }
-.lg-syncbtn svg { width: 20px; height: 20px; } .lg-synced { margin: -8px 4px 14px; }
 .lg-col { display: flex; flex-direction: column; gap: 14px; } .lg-col > .card { margin: 0; }
 .lg-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .lg-range { font-size: 18px; font-weight: 800; letter-spacing: -.01em; } .lg-nav { display: flex; gap: 8px; align-items: center; }
