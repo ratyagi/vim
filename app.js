@@ -613,7 +613,7 @@
         fpts = A.fc.points.filter(function (p) { return p.h <= h; });
         var mk = function (f) { return fpts.map(function (p) { return { n: last.n + p.h, v: dsp(f(p)) }; }); };
         fc = { mid: mk(function (p) { return p.mean; }), lo: mk(function (p) { return p.mean - z * p.sdRc; }), hi: mk(function (p) { return p.mean + z * p.sdRc; }),
-          straight: A.maintain ? null : mk(function (p) { return p.straight; }) };
+          straight: showStraight(A) ? mk(function (p) { return p.straight; }) : null };
         n1 = last.n + h;
       }
       var byN = {}; ser.forEach(function (p) { byN[p.n] = p; });
@@ -683,11 +683,24 @@
   }
   function rangeDays(A) { return ui.range === 'all' ? A.series.length : parseInt(ui.range, 10); }
   function effH(A) { var full = fcHorizon(A); return full ? Math.min(full, Math.max(14, rangeDays(A))) : 0; }
+  // Draw the straight line only when it sits visibly away from the forecast over the chart range.
+  function showStraight(A) {
+    if (!ui.fc || !A.fc || A.maintain) return false;
+    var h = effH(A), gap = 0, lo = Infinity, hi = -Infinity, n0 = A.last.n - rangeDays(A) + 1;
+    var add = function (v) { if (v < lo) lo = v; if (v > hi) hi = v; };
+    A.series.forEach(function (p) { if (p.n >= n0) add(p.trend); });
+    if (A.goalKg) add(A.goalKg);
+    A.fc.points.forEach(function (p) { if (p.h <= h) { gap = Math.max(gap, Math.abs(p.mean - p.straight)); add(p.mean); add(p.straight); } });
+    // about 220px of chart height spans the weight range, so this is the gap in pixels
+    return gap / Math.max(0.5, hi - lo) * 220 >= 9;
+  }
   function legend(A) {
+    var st = showStraight(A);
     return '<div class="legend"><span><i style="background:var(--red)"></i>Trend</span><span><i class="dot" style="background:#fff;opacity:.6"></i>Reading</span>' +
       '<span><i class="box"></i>Usual scatter</span>' +
       (A.estCount ? '<span><i class="dot" style="border:1px solid #8e8e93"></i>Filled in</span>' : '') +
-      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (A.maintain ? '' : '<span class="cyan"><i class="dot2"></i>Straight line</span>') : '') + '</div>' +
+      (ui.fc && A.fc ? '<span class="green"><i class="dash"></i>Forecast</span>' + (st ? '<span class="cyan"><i class="dot2"></i>Straight line</span>' : '') : '') + '</div>' +
+      (ui.fc && A.fc && !A.maintain ? '<div class="sub" style="margin-top:6px">' + (st ? 'Forecast: pace usually fades, so it flattens. Straight line: today\'s pace, unchanged.' : 'The straight line (today\'s pace, unchanged) is hidden because it sits on top of the forecast over this range.') + '</div>' : '') +
       (ui.fc && A.fc && fcHorizon(A) > effH(A) ? '<div class="sub" style="margin-top:6px">The forecast continues past this chart. Pick a longer range to see all of it.</div>' : '');
   }
 
@@ -736,7 +749,6 @@
         '<div class="row-btns"><button class="btn primary" data-action="to-maintain">Keep it steady</button><button class="btn" data-tab="settings">Set a new goal</button></div></div>';
     }
     if (!A.maintain && A.paceTarget.tooFast && A.paceTarget.source === 'date') warns += '<div class="warn" style="margin-bottom:14px">Your target date needs ' + dsp(A.paceTarget.kgPerWeek).toFixed(2) + ' ' + u + ' per week, above the 1% of body weight per week that is usually treated as an upper limit. A later date in Settings is safer.</div>';
-    if (A.fastPace) warns += '<div class="warn" style="margin-bottom:14px">Your pace is above 1% of body weight per week. Early loss often includes water, but if it stays this fast it is worth mentioning to a doctor or dietitian.</div>';
     if (A.thin) warns += '<div class="info" style="margin-bottom:14px">Trend, pace and forecast switch on after 7 readings. You have ' + A.realCount + '.</div>';
     if (A.daysSinceLast >= 4) warns += '<div class="info" style="margin-bottom:14px">Last reading was ' + A.daysSinceLast + ' days ago. One reading is enough to get back on track.</div>';
 

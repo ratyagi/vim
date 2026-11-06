@@ -97,7 +97,6 @@
       var sdB = Math.sqrt(m.last.P22);
       A.rate = { lossPerWeek: -7 * m.last.b, se80: Z80 * 7 * sdB };
     }
-    A.fastPace = !!(A.rate && entries.length >= 14 && A.spanDays >= 14 && A.rate.lossPerWeek > 0.01 * A.currentKg && (A.rate.lossPerWeek - A.rate.se80) > 0.008 * A.currentKg);
 
     // ---- goal and pace target
     var goal = cfg.goalKg || null, maintain = cfg.mode === 'maintain' && !!goal;
