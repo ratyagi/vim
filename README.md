@@ -91,7 +91,7 @@ Pages redeploys in about a minute. Hard refresh once (or close and reopen the in
 - **Weekday effect**: each reading minus its trend, grouped by weekday. Shown only when it is larger than noise.
 - **Flat stretch**: trend moved less than 0.15 kg in 10 days.
 - **BMI**: WHO cut-offs, or Asia-Pacific cut-offs in Settings. It is a screen, not a diagnosis.
-- The app warns if pace is above 1% of body weight per week.
+- The chart draws the straight line (today's pace, unchanged) only when it sits visibly apart from the forecast, which flattens as pace usually fades.
 
 ## Try it with fake data
 

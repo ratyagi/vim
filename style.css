@@ -81,7 +81,7 @@ input, select { font: inherit; color: var(--text); }
   #side .logbtn { display: flex; min-height: 48px; padding: 0; font-size: 0; }
   #side .logbtn::before { content: "+"; font-size: 28px; font-weight: 600; line-height: 1; }
   #side .logbtn kbd { display: none; }
-  #content { overflow-y: auto; overflow-x: hidden; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--card3) transparent; }
+  #content { overflow-y: auto; overflow-x: hidden; min-height: 0; }
   #view { padding: 30px 34px 40px; max-width: 1060px; margin: 0 auto; }
 }
 @media (min-width: 1100px) {
@@ -350,3 +350,17 @@ button.li { min-height: 52px; }
 @media (max-width: 360px) { .lg-addname { font-size: 14px; } .lg-addbtn { padding: 10px; } .lg-range { font-size: 16px; } .lg-two { grid-template-columns: 1fr; } }
 @media (max-height: 559px) { .sheet.full { padding-top: 10px; } .lg-day { min-height: 56px; } }
 .tab span { white-space: nowrap; }
+
+/* Scrollbars: the track stops before the rounded corners instead of running through them.
+   Chromium and Safari use the track margin; Firefox falls back to a thin bar. */
+#content, .sheet { scrollbar-gutter: auto; }
+@supports selector(::-webkit-scrollbar) {
+  #content::-webkit-scrollbar, .sheet::-webkit-scrollbar { width: 12px; }
+  #content::-webkit-scrollbar-track, .sheet::-webkit-scrollbar-track { background: transparent; margin: 30px 0; }
+  .sheet::-webkit-scrollbar-track { margin: 24px 0; }
+  #content::-webkit-scrollbar-thumb, .sheet::-webkit-scrollbar-thumb { background: var(--card3); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; min-height: 40px; }
+  #content::-webkit-scrollbar-thumb:hover, .sheet::-webkit-scrollbar-thumb:hover { background-clip: border-box; border-width: 3px; }
+}
+@supports not selector(::-webkit-scrollbar) {
+  #content, .sheet { scrollbar-width: thin; scrollbar-color: var(--card3) transparent; }
+}
