@@ -10,6 +10,7 @@ Static site. No server, no accounts, no tracking. Opens as a framed window on de
 - **Goal date**: thousands of simulated futures from the fitted model. You get the most likely date, a 10th to 90th percentile window, and the chance of being there by a date.
 - **Self-check**: it replays your history, forecasting 7 days ahead at every point, and compares with what happened. If past forecasts were too confident, ranges are widened.
 - **Keep steady mode**: after you reach a goal, track time inside a range instead.
+- **Navigation**: Today, Logs, Progress and Settings, with the + button in the middle on phones. Progress holds two views, Trends (charts and readings) and Insights (forecast and patterns), switched at the top.
 - **Themes**: Violet Dusk (default), Sunset and the original Fitness colours. Pick one in Settings > Appearance. It is saved per device.
 - **Rings**: goal progress, last 7 days against your weekly target, and a daily ring that closes when you log today.
 - Decimals work in every field (72.4, 72,4, 169.5, 5 ft 6.5 in).

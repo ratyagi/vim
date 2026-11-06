@@ -1,6 +1,6 @@
 /* Offline cache. Network first so updates to the app show up right away; cache is the fallback.
    Only caches this site's own files. It never touches api.github.com. */
-var CACHE = 'vim-v8';
+var CACHE = 'vim-v9';
 var FILES = ['./', 'index.html', 'style.css', 'model.js', 'stats.js', 'charts.js', 'app.js', 'lib/xlsx.full.min.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', function (e) {

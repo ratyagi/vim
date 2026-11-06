@@ -37,7 +37,7 @@
   /* ---------------------------------------------------------------- store */
   var state = DEMO ? demoState() : loadState();
   var sync = loadSync();
-  var ui = { ld: null, lend: null, lf: 'all', lshow: 20, tab: 'summary', range: '30', fc: true, showAll: false, msg: '', cls: '' };
+  var ui = { ld: null, lend: null, lf: 'all', lshow: 20, tab: 'summary', ptab: 'trends', range: '30', fc: true, showAll: false, msg: '', cls: '' };
   var lastA = null;
 
   function loadState() {
@@ -705,7 +705,9 @@
   }
 
   /* ---------------------------------------------------------------- screens */
+  var inProgress = false;
   function header(title) {
+    if (inProgress) return '';
     var d = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
     return '<div class="head"><div><div class="date">' + d + '</div><h1>' + title + '</h1></div>' + chipHtml() + '</div>' + (DEMO ? '<div class="warn" style="margin-bottom:14px">Demo data. Nothing here is saved.</div>' : '');
   }
@@ -1378,7 +1380,17 @@
     };
     return step();
   }
-  var VIEWS = { summary: viewSummary, trends: viewTrends, insights: viewInsights, logs: viewLogs, settings: viewSettings };
+  // Progress is one tab holding two views: Trends (charts, readings) and Insights (forecast, patterns).
+  function viewProgress(A) {
+    if (!A.series || !A.series.length) return emptyState('Progress');
+    var h = header('Progress');
+    h += '<div class="seg prog-seg" role="tablist" aria-label="Progress view">' +
+      ['trends', 'insights'].map(function (k) { return '<button role="tab" data-tab="' + k + '" aria-selected="' + (ui.ptab === k) + '" class="' + (ui.ptab === k ? 'on' : '') + '">' + (k === 'trends' ? 'Trends' : 'Insights') + '</button>'; }).join('') + '</div>';
+    inProgress = true;
+    try { h += (ui.ptab === 'insights' ? viewInsights : viewTrends)(A); } finally { inProgress = false; }
+    return h;
+  }
+  var VIEWS = { summary: viewSummary, progress: viewProgress, logs: viewLogs, settings: viewSettings };
 
   function render() {
     var A = lastA || analyze(), v = $('#view'), c = $('#content');
@@ -1399,7 +1411,7 @@
   }
 
   /* ---------------------------------------------------------------- events */
-  function goTab(t) { ui.tab = t; ui.showAll = false; ui.lshow = 20; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
+  function goTab(t) { if (t === 'trends' || t === 'insights') { ui.ptab = t; t = 'progress'; } ui.tab = t; ui.showAll = false; ui.lshow = 20; render(); window.scrollTo(0, 0); var c = $('#content'); if (c) c.scrollTop = 0; }
   document.addEventListener('click', function (e) {
     var tb = e.target.closest('[data-toast]'); if (tb) { var fn = toastFn; $('#toast').classList.remove('show'); toastFn = null; if (fn) fn(); return; }
     var tp = e.target.closest('[data-theme-pick]'); if (tp) { applyTheme(tp.dataset.themePick); render(); return; }
