@@ -78,6 +78,7 @@ Pages redeploys in about a minute. Hard refresh once (or close and reopen the in
 - Three short journals for the days food noise hits: **Moment log** (30 seconds, any number per day), **Evening log** (2 minutes, one per day) and **Weekly review** (10 minutes, one per week, dated by the week's last day).
 - Pick a date once at the top. Everything you add goes on that date. Tap a saved log to edit or delete it.
 - The weekly review pre-selects the triggers that came up most in that week's moment logs. Change them freely.
+- In the Moment log you can pick several feelings. Choosing **Other** opens a short text box for your own words. Every text field has a limit (shown as "N left" when you get close). Older logs with a single feeling still open and display normally.
 - Logs are stored on this device and, once sync is connected, in `logs.json` next to `data.json` in the same private repo. Each sync merges with the file first, so two devices never overwrite each other.
 - Settings > Erase all logs clears them. Backup files include logs.
 

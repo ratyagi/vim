@@ -1084,12 +1084,17 @@
   function nowHHMM() { var d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
   function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
+  // felt used to be one value; it is now a list. Old entries still read fine.
+  function feltList(f) { return Array.isArray(f.felt) ? f.felt : (f.felt ? [f.felt] : []); }
+  function feltText(f) {
+    return feltList(f).map(function (v) { return v === 'other' && f.feltOther ? f.feltOther : (FEEL_LABEL[v] || v); }).join(', ');
+  }
   function summary(e) {
     var f = e.fields || {}, p = [];
     if (e.type === 'moment') {
       if (f.time) p.push(fmtTime(f.time));
       if (f.place) p.push(f.place);
-      if (f.felt) p.push(FEEL_LABEL[f.felt] || f.felt);
+      if (feltList(f).length) p.push(feltText(f));
       if (f.bodyCheck) p.push('Body check ' + f.bodyCheck);
       if (p.length < 2 && f.did) p.push(f.did);
     } else if (e.type === 'evening') {
@@ -1162,15 +1167,15 @@
   function weekCounts(endDate) {
     var en = S.dayNum(endDate), c = {};
     liveLogs().forEach(function (e) {
-      if (e.type !== 'moment' || !e.fields.felt) return;
-      var n = S.dayNum(e.date); if (n >= en - 6 && n <= en) c[e.fields.felt] = (c[e.fields.felt] || 0) + 1;
+      if (e.type !== 'moment') return;
+      var n = S.dayNum(e.date); if (n >= en - 6 && n <= en) feltList(e.fields).forEach(function (v) { c[v] = (c[v] || 0) + 1; });
     });
     return c;
   }
   function lgTextField(id, label, val, o) {
     o = o || {};
     return '<div class="lg-f"><label for="' + id + '">' + label + '</label>' + (o.hint ? '<div class="lg-hint">' + o.hint + '</div>' : '') +
-      (o.area ? '<textarea id="' + id + '" class="lg-in" rows="' + (o.rows || 2) + '" maxlength="500" placeholder="' + esc(o.ph || '') + '">' + esc(val || '') + '</textarea>'
+      (o.area ? '<textarea id="' + id + '" class="lg-in" rows="' + (o.rows || 2) + '" maxlength="1000" placeholder="' + esc(o.ph || '') + '">' + esc(val || '') + '</textarea>'
         : '<input id="' + id + '" class="lg-in" maxlength="200" autocomplete="off" value="' + esc(val || '') + '" placeholder="' + esc(o.ph || '') + '">') + '</div>';
   }
   function lgChips(id, sel, counts, multi) {
@@ -1209,7 +1214,8 @@
         '<div class="lg-f"><label id="lg-bc-l">Body check</label><div class="lg-hint">Is your stomach hungry, or does your mouth just want something?</div>' +
         '<div class="lg-seg5" role="group" aria-labelledby="lg-bc-l">' + [1, 2, 3, 4, 5].map(function (n) { return '<button type="button" data-v="' + n + '" class="' + (bc === n ? 'on' : '') + '" aria-pressed="' + (bc === n) + '">' + n + '</button>'; }).join('') + '</div>' +
         '<div class="lg-ends"><span>1 = not at all</span><span>5 = very hungry</span></div></div>' +
-        '<div class="lg-f"><label>What I felt just before</label>' + lgChips('lg-felt', f.felt ? [f.felt] : [], null, false) + '</div>' +
+        '<div class="lg-f"><label>What I felt just before</label><div class="lg-hint">Pick all that apply.</div>' + lgChips('lg-felt', feltList(f), null, true) +
+        '<div class="lg-other hide" id="lg-other-wrap"><label for="lg-other">What were you feeling?</label><input id="lg-other" class="lg-in" maxlength="80" autocomplete="off" placeholder="In your own words" value="' + esc(f.feltOther || '') + '"></div></div>' +
         lgTextField('lg-did', 'What I did', f.did, { area: true, ph: 'What happened next' }) + lgTextField('lg-try', 'What I\'ll try next time', f.tryNext, { ph: 'One small thing' });
     } else if (type === 'evening') {
       var it = f.ifThen || {};
@@ -1244,6 +1250,21 @@
           h.textContent = any ? 'The small number is how often it showed up in your moment logs this week.' + (prefilled ? ' The top ones are picked for you. Change freely.' : '') : 'No moment logs with a feeling this week.';
         }
         setDate(); hint();
+        function syncOther(focus) {
+          var w = $('#lg-other-wrap', el); if (!w) return;
+          var on = !!$('#lg-felt .pick[data-v="other"].on', el); w.classList.toggle('hide', !on);
+          if (on && focus) $('#lg-other', el).focus();
+        }
+        syncOther(false);
+        $$('.lg-in[maxlength]', el).forEach(function (inp) {
+          var c = document.createElement('div'); c.className = 'lg-count hide'; inp.insertAdjacentElement('afterend', c);
+          var max = +inp.getAttribute('maxlength');
+          var upd = function () {
+            var left = max - inp.value.length;
+            if (left <= Math.max(10, max * 0.2)) { c.textContent = left + ' left'; c.classList.remove('hide'); c.classList.toggle('lim', left <= Math.max(3, max * 0.05)); } else c.classList.add('hide');
+          };
+          inp.addEventListener('input', upd); upd();
+        });
         el.addEventListener('input', function () { dirty = true; });
         el.addEventListener('click', function (e) {
           var pk = e.target.closest('.pick'), sg = e.target.closest('.lg-seg5 button');
@@ -1251,6 +1272,7 @@
             dirty = true; var row = pk.parentNode, multi = row.getAttribute('data-multi') === '1', was = pk.classList.contains('on');
             if (!multi) $$('.pick', row).forEach(function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
             pk.classList.toggle('on', !was); pk.setAttribute('aria-pressed', String(!was));
+            if (type === 'moment' && row.id === 'lg-felt') syncOther(pk.dataset.v === 'other' && !was);
           } else if (sg) {
             dirty = true; var was2 = sg.classList.contains('on');
             $$('.lg-seg5 button', el).forEach(function (b) { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
@@ -1273,7 +1295,7 @@
         function g(i) { var x = $('#' + i, el); return x ? x.value.trim() : ''; }
         function picked() { return $$('#lg-felt .pick.on', el).map(function (b) { return b.dataset.v; }); }
         function collect() {
-          if (type === 'moment') { var b = $('.lg-seg5 button.on', el); return { time: g('lg-time'), place: g('lg-place'), bodyCheck: b ? +b.dataset.v : null, felt: picked()[0] || '', did: g('lg-did'), tryNext: g('lg-try') }; }
+          if (type === 'moment') { var b = $('.lg-seg5 button.on', el); return { time: g('lg-time'), place: g('lg-place'), bodyCheck: b ? +b.dataset.v : null, felt: picked(), feltOther: $('#lg-felt .pick[data-v="other"].on', el) ? g('lg-other') : '', did: g('lg-did'), tryNext: g('lg-try') }; }
           if (type === 'evening') return { newThing: g('lg-new'), ifThen: { if: g('lg-if'), then: g('lg-then') }, wentWell: g('lg-well') };
           return { triggers: picked(), triggersNote: g('lg-tnote'), worked: g('lg-worked'), didnt: g('lg-didnt'), change: g('lg-change'), tryFood: g('lg-tryfood') };
         }
